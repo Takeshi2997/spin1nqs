@@ -45,7 +45,6 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps,
     # 出力は [2, n_walkers] の行列
     log_psi_current, _ = Lux.apply(model, sampler.current_inputs, ps, st)
     log_psi_proposed, _ = Lux.apply(model, sampler.proposed_inputs, ps, st)
-    println(log_psi_current[1, 1], log_psi_current[2, 1])
 
     # --- 3. メトロポリス判定の準備 ---
     rand!(sampler.rand_vals) # [0, 1) の乱数を生成

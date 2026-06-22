@@ -35,6 +35,7 @@ end
 function initialize_states!(basis::MomentumSpinorBasis, target_Mz::Int)
     N = basis.n_particles
     L = basis.n_modes
+    zero = div(L - 1, 2) + 1
     
     # 物理的要件のチェック
     if abs(target_Mz) > N * 1
@@ -43,8 +44,8 @@ function initialize_states!(basis::MomentumSpinorBasis, target_Mz::Int)
     
     # CPU上で初期状態のベース (L × 3行列) を作成
     base_state = zeros(Int32, L, 3)
-    base_state[1, 1] = N - target_Mz
-    base_state[1, 2] = target_Mz
+    base_state[zero, 1] = N - target_Mz
+    base_state[zero, 2] = target_Mz
 
     # 作成したベース状態を、全ウォーカー(バッチ)分コピーして3次元配列にする
     # repmatのような操作を行い、CPU上で [L, 3, n_walkers] の配列を作る
@@ -71,6 +72,7 @@ function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{
     rand_vals = CUDA.rand(Float32, 4, n_walkers)
     
     blocks = ceil(Int, n_walkers / threads)
+    
     @cuda threads=threads blocks=blocks _proposal_kernel!(
         states, proposed_states, rand_vals, k_max, n_particles
     )
@@ -110,7 +112,7 @@ function _proposal_kernel!(states, proposed_states, rand_vals, k_max, N)
                 if prev_count < target2 <= count; m2 = m; s2 = s; end
             end
         end
-        
+
         # 3. 運動量移動 q の決定
         # rand_vals[3, w] は [0, 1) の乱数。これを使って q ∈ [-k_max, k_max] を一様に選ぶ
         q = floor(Int, rand_vals[3, w] * n_modes) - k_max
@@ -127,7 +129,6 @@ function _proposal_kernel!(states, proposed_states, rand_vals, k_max, N)
         if abs(k1_new) <= k_max && abs(k2_new) <= k_max
             m1_new = k1_new + k_max + 1
             m2_new = k2_new + k_max + 1
-            
             s1_new, s2_new = s1, s2 # デフォルトはスピン非反転（通常散乱）
             
             # 5. スピン交換プロセスの処理 (確率的に分岐)

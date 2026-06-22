@@ -105,9 +105,9 @@ function compute_local_energy!(
     
     # 相互作用エネルギー E_V = sum_{x'} V_xx' * (Ψ(x')/Ψ(x)) を足し合わせる
     E_V = sum(matrix_elements .* psi_ratio, dims=1)
-    
+
     # 3. 合計して返す
-    E_loc .+= dropdims(E_V, dims=1)
+    E_loc += dropdims(E_V, dims=1)
     
     return E_loc
 end

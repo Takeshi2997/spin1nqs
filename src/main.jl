@@ -1,32 +1,34 @@
 using CUDA
 using Random
-using Statistics
 using Lux
 using Optimisers
 using Zygote
+using ComponentArrays
 using Printf
 
 # 自作モジュールの読み込み（同じディレクトリにあると仮定）
-include("Hilbert.jl")
-include("Model.jl")
-include("Sampler.jl")
-include("Physics.jl")
+include("hilbert.jl")
+include("model.jl")
+include("sampler.jl")
+include("physics.jl")
+include("optimise.jl")
 
 using .Hilbert
 using .Model
 using .Sampler
 using .Physics
+using .Optimise
 
 function main()
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    k_max = 5              # カットオフ波数 (モード総数: 2*5 + 1 = 11)
+    k_max = 2               # カットオフ波数 
     n_particles = 10        # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
-    n_walkers = 1000       # 並列ウォーカー数 (バッチサイズ)
+    n_walkers = 1000        # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_epochs = 1          # 総学習Epoch数
+    n_epochs = 100          # 総学習Epoch数
     
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
@@ -38,7 +40,7 @@ function main()
     )
 
     rng = Xoshiro(42)
-    CUDA.allowscalar(true) # GPUのシリアルアクセス(低速化の原因)を禁止してデバッグ
+    CUDA.allowscalar(false) # GPUのシリアルアクセス(低速化の原因)を禁止してデバッグ
 
     println("=== VMC駆動テストを起動します ===")
     println("環境: ", CUDA.functional() ? "GPU (CUDA)" : "CPU (警告: 動作が遅くなります)")
@@ -53,12 +55,12 @@ function main()
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     
     # 重み(ps)と状態(st)をGPUへ転送
-    ps = ps_cpu |> cu
+    ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, n_particles^2 * 2 * k_max, n_walkers)
+    buffer = PhysicsBuffer(k_max, n_particles^2 * 2 * 2 * k_max, n_walkers)
 
     # D. オプティマイザの準備 (ここでは簡易的に通常のAdamを採用)
     opt = Optimisers.Adam(0.001f0)
@@ -68,7 +70,6 @@ function main()
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for _ in 1:n_thermal
         sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
-        println(basis.states[:, :, 1])
     end
     println("熱平衡化が完了しました。")
 
@@ -89,12 +90,12 @@ function main()
             # 局所エネルギー E_loc の計算
             E_loc = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
             
-            # CPUへ集約して記録 (1ステップ分の全ウォーカーの平均)
-            push!(E_loc_all, mean(Array(E_loc)))
+            E_mean = sum(E_loc) / n_walkers
+            push!(E_loc_all, E_mean)
         end
         
         # (B) エネルギー期待値の算出
-        E_mean = mean(E_loc_all)
+        E_mean = sum(E_loc_all) / n_walkers
         E_real = real(E_mean)
         E_imag = imag(E_mean) # 統計が十分ならほぼ 0 になるはず
         
@@ -107,30 +108,33 @@ function main()
         inputs = Float32.(basis.states)
         outputs, _ = Lux.apply(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-        E_loc_mean_scalar = mean(E_loc_latest) # このバッチの平均エネルギー
+        ## E_loc_mean_scalar = sum(E_loc_latest) / n_walkers # このバッチの平均エネルギー
         
         # Zygoteを用いた自動微分
         # Luxのapplyがタプルを返すため、Lux.training_handleのような形で記述します
-        grads = gradient(ps) do p
-            # フォワードパス
-            out, _ = Lux.apply(nqs_model, inputs, p, st)
-            
-            # 対数波動関数の実部と虚部
-            @views log_psi_r = out[1, :]
-            @views log_psi_i = out[2, :]
-            
-            # VMC勾配トリック用の重み (E_loc(x) - <E>) 
-            # ※ p に関しては定数として扱うため、Zygoteの外で計算した E_loc_latest を使用
-            ΔE_r = real.(E_loc_latest .- E_loc_mean_scalar)
-            ΔE_i = imag.(E_loc_latest .- E_loc_mean_scalar)
-            
-            # トリック数式: 平均( 2 * (ΔE_r * log_psi_r + ΔE_i * log_psi_i) )
-            loss = mean(2.0f0 .* (ΔE_r .* log_psi_r .+ ΔE_i .* log_psi_i))
-            return loss
-        end[1]
+        ## grads = gradient(ps) do p
+        ##     # フォワードパス
+        ##     out, _ = Lux.apply(nqs_model, inputs, p, st)
+        ##     
+        ##     # 対数波動関数の実部と虚部
+        ##     @views log_psi_r = out[1, :]
+        ##     @views log_psi_i = out[2, :]
+        ##     
+        ##     # VMC勾配トリック用の重み (E_loc(x) - <E>) 
+        ##     # ※ p に関しては定数として扱うため、Zygoteの外で計算した E_loc_latest を使用
+        ##     ΔE_r = real.(E_loc_latest .- E_loc_mean_scalar)
+        ##     ΔE_i = imag.(E_loc_latest .- E_loc_mean_scalar)
+        ##     
+        ##     # トリック数式: 平均( 2 * (ΔE_r * log_psi_r + ΔE_i * log_psi_i) )
+        ##     loss = mean(2.0f0 .* (ΔE_r .* log_psi_r .+ ΔE_i .* log_psi_i))
+        ##     return loss
+        ## end[1]
+        ## # (D) パラメータの更新
+        ## opt_state, ps = Optimisers.update(opt_state, ps, grads)
+        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest)
 
-        # (D) パラメータの更新
-        opt_state, ps = Optimisers.update(opt_state, ps, grads)
+        learning_rate = 0.001f0
+        ps .= ps .+ learning_rate .* delta_p
 
         # (E) 進捗の表示
         if epoch % 10 == 0 || epoch == 1
