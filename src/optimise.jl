@@ -29,7 +29,6 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epsilon=1.0f-3)
 
 
     # Zygoteでヤコビアンを取得 O: [n_walkers, n_params]
-    # ※ Zygote.jacobian は (出力次元, 入力次元) で返ります
     O_real = Zygote.jacobian(eval_log_psi_real, ps_flat)[1] 
     O_imag = Zygote.jacobian(eval_log_psi_imag, ps_flat)[1] 
     O_matrix = O_real .+ im .* O_imag # 複素数のヤコビアン行列
@@ -52,11 +51,9 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epsilon=1.0f-3)
     F = real.((conj.(O_centered) * E_centered) ./ n_walkers)
 
     # 4. 正則化（対角成分を少し底上げして逆行列計算を安定化）
-    # S = S + ε * I の処理
     S_reg = S + epsilon * I
 
     # 5. 連立方程式 S * Δp = F を解く ( \ 演算子を使用)
-    # GPU上(CuArray)のままでLU分解やコレスキー分解が走ります
     delta_p = S_reg \ F
 
     return delta_p

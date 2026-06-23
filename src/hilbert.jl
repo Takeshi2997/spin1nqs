@@ -44,8 +44,8 @@ function initialize_states!(basis::MomentumSpinorBasis, target_Mz::Int)
     
     # CPU上で初期状態のベース (L × 3行列) を作成
     base_state = zeros(Int32, L, 3)
-    base_state[zero, 1] = N - target_Mz
-    base_state[zero, 2] = target_Mz
+    base_state[zero, 2] = N - target_Mz
+    base_state[zero, 3] = target_Mz
 
     # 作成したベース状態を、全ウォーカー(バッチ)分コピーして3次元配列にする
     # repmatのような操作を行い、CPU上で [L, 3, n_walkers] の配列を作る
@@ -76,6 +76,7 @@ function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{
     @cuda threads=threads blocks=blocks _proposal_kernel!(
         states, proposed_states, rand_vals, k_max, n_particles
     )
+ 
     return nothing
 end
 
@@ -116,7 +117,6 @@ function _proposal_kernel!(states, proposed_states, rand_vals, k_max, N)
         # 3. 運動量移動 q の決定
         # rand_vals[3, w] は [0, 1) の乱数。これを使って q ∈ [-k_max, k_max] を一様に選ぶ
         q = floor(Int, rand_vals[3, w] * n_modes) - k_max
-        if q == 0; return; end # q=0 は状態が変わらないので終了
         
         # 波数のインデックス(1 ~ n_modes) から実際の波数(-k_max ~ k_max)へ変換
         k1 = m1 - k_max - 1

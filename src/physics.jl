@@ -83,7 +83,8 @@ function compute_local_energy!(
         proposed_states, 
         matrix_elements, 
         params.k_max,
-        params.c0
+        params.c0,
+        params.c2
     )
     
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
@@ -119,7 +120,7 @@ function _scattering_kernel!(
     states,             # [n_modes, 3, n_walkers] 現在の状態
     proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
     matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
-    k_max::Int, c0::Float32
+    k_max::Int, c0::Float32, c2::Float32
 )
     n_modes = 2 * k_max + 1
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
@@ -128,8 +129,9 @@ function _scattering_kernel!(
         transition_idx = 1
         
         # 定数部分
-        v0 = c0 / (2.0f0 * π)
-        
+        v0 = c0 / (4.0f0 * π)
+        v2 = c2 / (4.0f0 * π)
+
         # 散乱する2粒子のモードを選択
         for m1 in 1:n_modes, s1 in 1:3
             n1 = states[m1, s1, w]
@@ -137,6 +139,8 @@ function _scattering_kernel!(
             
             for m2 in 1:n_modes, s2 in 1:3
                 n2 = states[m2, s2, w]
+                if n2 == 0; continue; end
+                
                 # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
                 if (m1 == m2 && s1 == s2) && n2 < 2; continue; end
                 
@@ -149,8 +153,6 @@ function _scattering_kernel!(
  
                 # 運動量移動 q のループ
                 for q in -k_max:k_max
-                    if q == 0; continue; end 
-                    
                     # 散乱後の運動量
                     k1_new = k1 + q
                     k2_new = k2 - q
@@ -165,7 +167,6 @@ function _scattering_kernel!(
                                 proposed_states[m, s, transition_idx, w] = states[m, s, w]
                             end
                         end
-
                         proposed_states[m1, s1, transition_idx, w] -= 1
                         proposed_states[m2, s2, transition_idx, w] -= 1
                         proposed_states[m1_new, s1, transition_idx, w] += 1
@@ -178,9 +179,59 @@ function _scattering_kernel!(
                         
                         # 行列要素の計算: v0 * sqrt(消滅 * 生成)
                         bose_factor = sqrt(factor_annihilate * factor_create)
-                        matrix_elements[transition_idx, w] = v0 * bose_factor
+                        matrix_elements[transition_idx, w] = (v0 + v2 * s1 * s2)* bose_factor
                         
                         transition_idx += 1
+
+                        # (0, 0) <--> (1, -1) の組み合わせのみ遷移が発生する
+                        if s1 == 2 && s2 == 2
+                            # 0, 0 から 1, -1 への遷移 (s1_new=1, s2_new=3)
+                            s1_new, s2_new = 1, 3
+                            
+                            # 状態をコピーして更新
+                            for s in 1:3
+                                for m in 1:n_modes
+                                    proposed_states[m, s, transition_idx, w] = states[m, s, w]
+                                end
+                            end
+                            proposed_states[m1, s1, transition_idx, w] -= 1
+                            proposed_states[m2, s2, transition_idx, w] -= 1
+                            proposed_states[m1_new, s1_new, transition_idx, w] += 1
+                            proposed_states[m2_new, s2_new, transition_idx, w] += 1
+                            
+                            # スピン交換用のボース統計因子を計算
+                            n1_new = proposed_states[m1_new, s1_new, transition_idx, w]
+                            n2_new = proposed_states[m2_new, s2_new, transition_idx, w]
+                            factor_create = Float32(n1_new) * Float32(m1_new == m2_new && s1_new == s2_new ? n2_new - 1 : n2_new)
+                            bose_factor = sqrt(factor_annihilate * factor_create)
+                            
+                            matrix_elements[transition_idx, w] = v2 * bose_factor
+                            transition_idx += 1
+                        
+                        elseif (s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)
+                            # 1, -1 (または -1, 1) から 0, 0 への遷移 (s1_new=2, s2_new=2)
+                            s1_new, s2_new = 2, 2
+                            
+                            # 状態をコピーして更新
+                            for s in 1:3
+                                for m in 1:n_modes
+                                    proposed_states[m, s, transition_idx, w] = states[m, s, w]
+                                end
+                            end
+                            proposed_states[m1, s1, transition_idx, w] -= 1
+                            proposed_states[m2, s2, transition_idx, w] -= 1
+                            proposed_states[m1_new, s1_new, transition_idx, w] += 1
+                            proposed_states[m2_new, s2_new, transition_idx, w] += 1
+                            
+                            # スピン交換用のボース統計因子を計算
+                            n1_new = proposed_states[m1_new, s1_new, transition_idx, w]
+                            n2_new = proposed_states[m2_new, s2_new, transition_idx, w]
+                            factor_create = Float32(n1_new) * Float32(m1_new == m2_new && s1_new == s2_new ? n2_new - 1 : n2_new)
+                            bose_factor = sqrt(factor_annihilate * factor_create)
+                            
+                            matrix_elements[transition_idx, w] = v2 * bose_factor
+                            transition_idx += 1
+                        end
                     end
                 end
             end
@@ -194,5 +245,7 @@ function _scattering_kernel!(
     end
     return nothing
 end
+
+
 
 end # module
