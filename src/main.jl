@@ -28,16 +28,16 @@ function main()
     n_walkers = 1000        # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_epochs = 2000         # 総学習Epoch数
+    n_epochs = 20000        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
         k_max,
         2 * k_max + 1,
-        0.5f0,  # hbar^2 / 2m
-        1.0f0,  # c0 (密度相互作用)
-        0.2f0  # c2 (スピン交換相互作用)
+        0.0f0,  # hbar^2 / 2m
+        0.0f0,  # c0 (密度相互作用)
+        0.2f0   # c1 (スピン交換相互作用)
     )
 
     rng = Xoshiro(42)
@@ -52,7 +52,7 @@ function main()
     initialize_states!(basis, target_Mz)
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
-    nqs_model = build_momentum_nqs(k_max, hidden_dim=64)
+    nqs_model = build_momentum_nqs(k_max, hidden_dim=32)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     
     # 重み(ps)と状態(st)をGPUへ転送
@@ -61,7 +61,7 @@ function main()
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, n_particles^2 * 2 * 2 * (k_max + 1), n_walkers)
+    buffer = PhysicsBuffer(k_max, n_particles^2 * 2 * (2 * k_max + 1), n_walkers)
 
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")

@@ -9,7 +9,7 @@ export build_momentum_nqs, initialize_model
 """
 波数空間のスピン1ボゾン系向けNQSを構築する関数
 """
-function build_momentum_nqs(k_max::Int; hidden_dim::Int=64)
+function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
     n_modes = 2 * k_max + 1
     input_features = n_modes * 3 # (波数モード数) × (スピン3成分)
     
