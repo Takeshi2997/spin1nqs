@@ -13,8 +13,8 @@ MCMCの作業用メモリを管理する構造体
 """
 struct MCMCSampler
     proposed_states::CuArray{Int32, 3}      # 提案状態を入れるバッファ
-    current_inputs::CuArray{Float32, 3}     # NN入力用(現在)
-    proposed_inputs::CuArray{Float32, 3}    # NN入力用(提案)
+    current_inputs::CuArray{Int32, 3}     # NN入力用(現在)
+    proposed_inputs::CuArray{Int32, 3}    # NN入力用(提案)
     rand_vals::CuArray{Float32, 1}          # 受容判定用の一様乱数バッファ
 
     function MCMCSampler(basis)
@@ -38,13 +38,13 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps,
     
     # --- 2. 波動関数の評価 (Model.jl) ---
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー
-    sampler.current_inputs .= Float32.(basis.states)
-    sampler.proposed_inputs .= Float32.(sampler.proposed_states)
+    sampler.current_inputs .= basis.states
+    sampler.proposed_inputs .= sampler.proposed_states
 
     # 現在の状態 x と提案状態 x' の log|Ψ| を計算 (Lux.apply)
     # 出力は [2, n_walkers] の行列
-    log_psi_current, _ = Lux.apply(model, sampler.current_inputs, ps, st)
-    log_psi_proposed, _ = Lux.apply(model, sampler.proposed_inputs, ps, st)
+    log_psi_current_real = eval_complex_network_real(model, sampler.current_inputs, ps, st)
+    log_psi_proposed_real = eval_complex_network_real(model, sampler.proposed_inputs, ps, st)
 
     # --- 3. メトロポリス判定の準備 ---
     rand!(sampler.rand_vals) # [0, 1) の乱数を生成
@@ -53,7 +53,7 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps,
     blocks = ceil(Int, basis.n_walkers / basis.threads)
     @cuda threads=basis.threads blocks=blocks _accept_reject_kernel!(
         basis.states, sampler.proposed_states,
-        log_psi_current, log_psi_proposed,
+        log_psi_current_real, log_psi_proposed_real,
         sampler.rand_vals, basis.n_modes
     )
     basis.states = sampler.proposed_states
@@ -64,13 +64,13 @@ end
 """
 各ウォーカーごとにメトロポリス判定を行い、受容なら状態を更新するカーネル
 """
-function _accept_reject_kernel!(states, proposed_states, log_psi_cur, log_psi_prop, rand_vals, n_modes)
+function _accept_reject_kernel!(states, proposed_states, log_psi_cur_real, log_psi_prop_real, rand_vals, n_modes)
     # 自分が担当するウォーカー(列)のインデックス
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     
     if w <= size(states, 3)
         # 受容確率: P(x -> x') = |Ψ(x') / Ψ(x)|^2
-        log_P = 2.0f0 * (log_psi_prop[1, w] - log_psi_cur[1, w])
+        log_P = 2 * (log_psi_prop_real[w] - log_psi_cur_real[w])
         
         # log(乱数) < log(P) ならば受容
         if log(rand_vals[w]) < log_P

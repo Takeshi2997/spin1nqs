@@ -2,6 +2,7 @@ module Physics
 
 using CUDA
 using Lux
+using ..Model
 # using ..Hilbert # 必要に応じて
 
 export SystemParams, PhysicsBuffer, compute_local_energy!
@@ -60,7 +61,7 @@ end
 """
 function compute_local_energy!(
     states::CuArray{Int32, 3}, 
-    log_psi_current::CuArray{Float32, 2}, 
+    log_psi_current::CuArray{ComplexF32, 1}, 
     proposed_states::CuArray{Int32, 4},
     matrix_elements::CuArray{Float32, 2},
     params::SystemParams, 
@@ -86,23 +87,28 @@ function compute_local_energy!(
         params.c0,
         params.c1
     )
+    ## _scattering_kernel!(
+    ##     states, 
+    ##     proposed_states, 
+    ##     matrix_elements, 
+    ##     params.k_max,
+    ##     params.c0,
+    ##     params.c1
+    ## )
     
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
     flat_proposed = reshape(proposed_states, params.n_modes, 3, :)
 
     # (C) ネットワークで一括評価
-    flat_log_psi_prop, _ = Lux.apply(model, Float32.(flat_proposed), ps, st)
+    flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
     
     # (D) 元の形 [max_transitions, n_walkers] に戻す
-    log_psi_prop = reshape(flat_log_psi_prop, 2, size(matrix_elements, 1), n_walkers)
-    @views log_psi_amp_cur = log_psi_current[1, :]
-    @views log_psi_phs_cur = log_psi_current[2, :]
-    @views log_psi_amp_prop = log_psi_prop[1, :, :]
-    @views log_psi_phs_prop = log_psi_prop[2, :, :]
+    log_psi_prop = reshape(flat_log_psi_prop, size(matrix_elements, 1), n_walkers)
     
     # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
-    psi_ratio = exp.((log_psi_amp_prop .- log_psi_amp_cur') .+ im .* (log_psi_phs_prop .- log_psi_phs_cur'))
+    # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
+    psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
     
     # 相互作用エネルギー E_V = sum_{x'} V_xx' * (Ψ(x')/Ψ(x)) を足し合わせる
     E_V = sum(matrix_elements .* psi_ratio, dims=1)
@@ -193,7 +199,7 @@ function _scattering_kernel!(
                             
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 * bose_factor
+                            matrix_elements[transition_idx, w] = 2 * v1 * bose_factor
 
                             transition_idx += 1
                         

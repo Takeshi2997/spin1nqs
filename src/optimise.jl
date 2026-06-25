@@ -1,5 +1,6 @@
 module Optimise
 
+using ..Model
 using Lux
 using Zygote
 using LinearAlgebra
@@ -15,18 +16,17 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epsilon=1.0f-3)
     # 1. ヤコビアン O_k(x) の計算のためのラッパー関数
     function eval_log_psi_real(p)
         # log_psi の評価 (バッチ全体)
-        out, _ = Lux.apply(model, states, p, st)
+        out = eval_complex_network_real(model, states, p, st)
         # 複素NQSの場合は、ここで実部と虚部を合成した複素数ベクトルを返す
-        return out[1, :]
+        return out
     end
 
     function eval_log_psi_imag(p)
         # log_psi の評価 (バッチ全体)
-        out, _ = Lux.apply(model, states, p, st)
+        out = eval_complex_network_imag(model, states, p, st)
         # 複素NQSの場合は、ここで実部と虚部を合成した複素数ベクトルを返す
-        return out[1, :]
+        return out
     end
-
 
     # Zygoteでヤコビアンを取得 O: [n_walkers, n_params]
     O_real = Zygote.jacobian(eval_log_psi_real, ps_flat)[1] 

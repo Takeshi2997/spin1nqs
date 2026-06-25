@@ -25,10 +25,10 @@ function main()
     n_particles = 10        # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
-    n_walkers = 1000        # 並列ウォーカー数 (バッチサイズ)
+    n_walkers = 100         # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_epochs = 20000        # 総学習Epoch数
+    n_epochs = 10000        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
@@ -84,8 +84,8 @@ function main()
             sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
             
             # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
-            inputs = Float32.(basis.states)
-            outputs, _ = Lux.apply(nqs_model, inputs, ps, st)
+            inputs = basis.states
+            outputs = eval_complex_network(nqs_model, inputs, ps, st)
             
             # 局所エネルギー E_loc の計算
             E_loc = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
@@ -111,11 +111,11 @@ function main()
         
         # C. パラメータ更新のための勾配計算と更新
         inputs = Float32.(basis.states)
-        outputs, _ = Lux.apply(nqs_model, inputs, ps, st)
+        outputs = eval_complex_network(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
         delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest)
         learning_rate = 0.001f0
-        ps .= ps .+ learning_rate .* delta_p
+        ps .= ps .- learning_rate .* delta_p
 
         # D. 進捗の表示
         if epoch % 10 == 0 || epoch == 1

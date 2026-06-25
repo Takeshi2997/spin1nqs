@@ -90,10 +90,20 @@ function _proposal_kernel!(states, proposed_states, rand_vals, k_max, N)
     
     if w <= size(states, 3)
         # 1. 状態のコピー（初期化）
-        for m in 1:n_modes, s in 1:3
-            proposed_states[m, s, w] = states[m, s, w]
+        init_n = 1 + floor(ceil(Int, rand_vals[1, w] * n_modes) * n_modes * (N - 1))
+        for m in 1:n_modes
+            new_n1 = round(Int32, rand_vals[2, w] * init_n / 2)
+            proposed_states[m, 1, w] = new_n1
+            proposed_states[m, 2, w] = init_n - 2 * new_n1
+            proposed_states[m, 3, w] = new_n1
+            init_n -= 2 * new_n1
         end
-        
+    end
+
+    return nothing
+
+    if w <= size(states, 3)
+        # 1. 状態のコピー（初期化）
         # 2. ランダムに2つの粒子を選ぶ (累積和を使って N 個中から i 番目の粒子を特定)
         target1 = ceil(Int32, rand_vals[1, w] * N)
         target2 = ceil(Int32, rand_vals[2, w] * N)
@@ -142,7 +152,7 @@ function _proposal_kernel!(states, proposed_states, rand_vals, k_max, N)
                     s1_new, s2_new = 2, 2
                 end
             end
-            
+ 
             # 6. 状態の更新
             # 選んだ粒子を減らす
             proposed_states[m1, s1, w] -= 1
