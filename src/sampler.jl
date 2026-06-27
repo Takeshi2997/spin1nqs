@@ -56,7 +56,6 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps,
         log_psi_current_real, log_psi_proposed_real,
         sampler.rand_vals, basis.n_modes
     )
-    basis.states = sampler.proposed_states
 
     return nothing
 end

@@ -173,7 +173,7 @@ function _scattering_kernel!(
                         
                         # 行列要素の計算
                         bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1, m2_new, s2, transition_idx, w)
-                        matrix_elements[transition_idx, w] = (v0 + v1 * s1 * s2) / 2 * bose_factor
+                        matrix_elements[transition_idx, w] = (v0 + v1 * (s1 - 2) * (s2 - 2)) / 2 * bose_factor
 
                         transition_idx += 1
 
@@ -199,7 +199,7 @@ function _scattering_kernel!(
                             
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = 2 * v1 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 * bose_factor
 
                             transition_idx += 1
                         

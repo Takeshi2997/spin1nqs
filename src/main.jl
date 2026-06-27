@@ -25,10 +25,10 @@ function main()
     n_particles = 10        # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
-    n_walkers = 100         # 並列ウォーカー数 (バッチサイズ)
+    n_walkers = 1000        # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
-    n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_epochs = 10000        # 総学習Epoch数
+    n_steps = 200           # 1エポック（学習の1打）あたりのサンプリング数
+    n_epochs = 500        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
@@ -86,7 +86,7 @@ function main()
             # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
             inputs = basis.states
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
-            
+
             # 局所エネルギー E_loc の計算
             E_loc = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
             
@@ -121,6 +121,13 @@ function main()
         if epoch % 10 == 0 || epoch == 1
             @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f\n", epoch, E_real, E_imag, n1_mean, n2_mean, n3_mean)
         end
+    end
+    for _ in 1:100
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        inputs = Float32.(basis.states)
+        outputs = eval_complex_network(nqs_model, inputs, ps, st)
+        println(inputs[:, :, 1])
+        println(outputs[1, :])
     end
     println("=== 学習が正常に終了しました ===")
 end
