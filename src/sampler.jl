@@ -30,13 +30,13 @@ end
 """
 全ウォーカーを並列に1ステップ進める関数
 """
-function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps, st)
+function sample_step!(sampler::MCMCSampler, basis, model, kmax, ps, st)
     
-    # --- 1. 提案状態の生成 (Hilbert.jl) ---
+    # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
-    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, kmax, n_particles, basis.threads)
+    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, kmax, basis.threads)
     
-    # --- 2. 波動関数の評価 (Model.jl) ---
+    # 2. 波動関数の評価 (Model.jl)
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー
     sampler.current_inputs .= basis.states
     sampler.proposed_inputs .= sampler.proposed_states
@@ -46,10 +46,10 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particles, ps,
     log_psi_current_real = eval_complex_network_real(model, sampler.current_inputs, ps, st)
     log_psi_proposed_real = eval_complex_network_real(model, sampler.proposed_inputs, ps, st)
 
-    # --- 3. メトロポリス判定の準備 ---
+    # 3. メトロポリス判定の準備
     rand!(sampler.rand_vals) # [0, 1) の乱数を生成
    
-    # --- 4. 並列受容・棄却判定 ---
+    # 4. 並列受容・棄却判定
     blocks = ceil(Int, basis.n_walkers / basis.threads)
     @cuda threads=basis.threads blocks=blocks _accept_reject_kernel!(
         basis.states, sampler.proposed_states,

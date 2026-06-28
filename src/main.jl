@@ -25,10 +25,11 @@ function main()
     n_particles = 10        # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
-    n_walkers = 1000        # 並列ウォーカー数 (バッチサイズ)
+    n_walkers = 200         # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
-    n_steps = 200           # 1エポック（学習の1打）あたりのサンプリング数
-    n_epochs = 500        # 総学習Epoch数
+    n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
+    n_interval = 4          # サンプリングのインターバル
+    n_epochs = 10000        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
@@ -66,7 +67,7 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for _ in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        sample_step!(sampler, basis, nqs_model, k_max, ps, st)
     end
     println("熱平衡化が完了しました。")
  
@@ -80,8 +81,10 @@ function main()
         
         # A. サンプリングとデータ収集
         for step in 1:n_steps
-            # マルコフ連鎖を1ステップ進める
-            sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+            for _ in 1:n_interval
+                # マルコフ連鎖を1ステップ進める
+                sample_step!(sampler, basis, nqs_model, k_max, ps, st)
+            end
             
             # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
             inputs = basis.states
@@ -114,7 +117,7 @@ function main()
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
         delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest)
-        learning_rate = 0.001f0
+        learning_rate = 0.01f0
         ps .= ps .- learning_rate .* delta_p
 
         # D. 進捗の表示
@@ -123,7 +126,7 @@ function main()
         end
     end
     for _ in 1:100
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        sample_step!(sampler, basis, nqs_model, k_max, ps, st)
         inputs = Float32.(basis.states)
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         println(inputs[:, :, 1])

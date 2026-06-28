@@ -109,7 +109,7 @@ function compute_local_energy!(
     # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
     # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
     psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
-    
+
     # 相互作用エネルギー E_V = sum_{x'} V_xx' * (Ψ(x')/Ψ(x)) を足し合わせる
     E_V = sum(matrix_elements .* psi_ratio, dims=1)
 
@@ -186,10 +186,21 @@ function _scattering_kernel!(
 
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
 
                             transition_idx += 1
 
+                            s1_new, s2_new = 3, 1
+                            
+                            # 状態をコピーして更新
+                            _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+
+                            # 行列要素の計算
+                            bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
+
+                            transition_idx += 1
+                            
                         # (1, -1) <--> (0, 0), (-1, 1) <--> (0, 0) の遷移
                         elseif (s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)
                             s1_new, s2_new = 2, 2
@@ -199,10 +210,10 @@ function _scattering_kernel!(
                             
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
 
                             transition_idx += 1
-                        
+                            
                         # スピンの交換
                         elseif abs(s1 - s2) == 1
                             s1_new, s2_new = s2, s1
@@ -212,7 +223,7 @@ function _scattering_kernel!(
                             
                             # スピン交換用のボース統計因子を計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
 
                             transition_idx += 1
                         end

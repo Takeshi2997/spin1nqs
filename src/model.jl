@@ -22,7 +22,7 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
 
         # 2. 全結合層
         Dense(input_features => hidden_dim, tanh),
-        Dense(hidden_dim => hidden_dim, tanh),
+        ## Dense(hidden_dim => hidden_dim, tanh),
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力
@@ -53,11 +53,7 @@ function eval_complex_network(model, inputs, ps, st)
     log_psi_real = outputs[1, :]
     log_psi_imag = outputs[2, :]
 
-    phases = Zygote.@ignore begin
-        return _compute_phase_correction(inputs)
-    end
-
-    return log_psi_real .+ im .* log_psi_imag .+ im .* phases
+    return log_psi_real .+ im .* log_psi_imag
 end
 
 function eval_complex_network_real(model, inputs, ps, st)
@@ -66,11 +62,6 @@ end
 
 function eval_complex_network_imag(model, inputs, ps, st)
     return imag.(eval_complex_network(model, inputs, ps, st))
-end
-
-function _compute_phase_correction(inputs)
-    n0 = dropdims(sum(inputs[:, 2, :], dims=1), dims=1)
-    return n0 .* Float32(π) ./ 2
 end
 
 end # module Model
