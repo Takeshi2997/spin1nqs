@@ -41,11 +41,9 @@ end
 """
 運動エネルギー（対角項）を計算する関数
 """
-function compute_kinetic(states::CuArray{Int32, 3}, params::SystemParams)
-    n_modes, _, n_walkers = size(states)
-    
+function _compute_kinetic(states::CuArray{Int32, 3}, params::SystemParams)
     # 波数ベクトル k = [-k_max, ..., k_max] を作成し、二乗する
-    k_vec = CuArray(Float32.(-params.k_max:params.k_max))
+    k_vec = CuArray(Float32.(-params.k_max:params.k_max) .* 2 .* π ./ params.n_modes)
     k2_vec = k_vec .^ 2 # サイズ: [n_modes]
     
     # statesの形状 [n_modes, 3, n_walkers] に対して、各モードの粒子数とk^2を掛けて足し合わせる
@@ -71,7 +69,7 @@ function compute_local_energy!(
     n_walkers = size(states, 3)
     
     # 1. 運動エネルギーの計算（一瞬で終わります）
-    E_loc = compute_kinetic(states, params) 
+    E_loc = _compute_kinetic(states, params) 
     
     # 2. 相互作用エネルギーの計算（遷移テンソルの構築とNN評価）
     

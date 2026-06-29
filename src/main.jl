@@ -28,15 +28,15 @@ function main()
     n_walkers = 200         # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_interval = 4          # サンプリングのインターバル
-    n_epochs = 10000        # 総学習Epoch数
+    n_interval = 100          # サンプリングのインターバル
+    n_epochs = 2000        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
         k_max,
         2 * k_max + 1,
-        0.0f0,  # hbar^2 / 2m
+        1.0f0,  # hbar^2 / 2m
         0.0f0,  # c0 (密度相互作用)
         0.2f0   # c1 (スピン交換相互作用)
     )
@@ -67,10 +67,10 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for _ in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, ps, st)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
     end
     println("熱平衡化が完了しました。")
- 
+
     # === 4. メイン学習ループ ===
     for epoch in 1:n_epochs
         # このEpochでの観測量を蓄積するコンテナ
@@ -83,7 +83,7 @@ function main()
         for step in 1:n_steps
             for _ in 1:n_interval
                 # マルコフ連鎖を1ステップ進める
-                sample_step!(sampler, basis, nqs_model, k_max, ps, st)
+                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
             end
             
             # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
@@ -126,7 +126,7 @@ function main()
         end
     end
     for _ in 1:100
-        sample_step!(sampler, basis, nqs_model, k_max, ps, st)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
         inputs = Float32.(basis.states)
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         println(inputs[:, :, 1])

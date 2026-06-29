@@ -13,35 +13,37 @@ MCMCの作業用メモリを管理する構造体
 """
 struct MCMCSampler
     proposed_states::CuArray{Int32, 3}      # 提案状態を入れるバッファ
-    current_inputs::CuArray{Int32, 3}     # NN入力用(現在)
-    proposed_inputs::CuArray{Int32, 3}    # NN入力用(提案)
+    h_factor::CuArray{Float32, 1}           # ヘイスティングス因子
+    current_inputs::CuArray{Int32, 3}       # NN入力用(現在)
+    proposed_inputs::CuArray{Int32, 3}      # NN入力用(提案)
     rand_vals::CuArray{Float32, 1}          # 受容判定用の一様乱数バッファ
 
     function MCMCSampler(basis)
         # ウォーカー数分のメモリを初期化時に「一度だけ」確保する
         proposed_states = CUDA.zeros(Int32, size(basis.states))
+        h_factor = CUDA.ones(Float32, basis.n_walkers)
         current_inputs = CUDA.zeros(Float32, size(basis.states))
         proposed_inputs = CUDA.zeros(Float32, size(basis.states))
         rand_vals = CUDA.zeros(Float32, basis.n_walkers)
-        new(proposed_states, current_inputs, proposed_inputs, rand_vals)
+        new(proposed_states, h_factor, current_inputs, proposed_inputs, rand_vals)
     end
 end
 
 """
 全ウォーカーを並列に1ステップ進める関数
 """
-function sample_step!(sampler::MCMCSampler, basis, model, kmax, ps, st)
+function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st)
     
     # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
-    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, kmax, basis.threads)
+    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, basis.threads)
     
     # 2. 波動関数の評価 (Model.jl)
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー
     sampler.current_inputs .= basis.states
     sampler.proposed_inputs .= sampler.proposed_states
 
-    # 現在の状態 x と提案状態 x' の log|Ψ| を計算 (Lux.apply)
+    # 現在の状態 x と提案状態 x' の log|Ψ| を計算
     # 出力は [2, n_walkers] の行列
     log_psi_current_real = eval_complex_network_real(model, sampler.current_inputs, ps, st)
     log_psi_proposed_real = eval_complex_network_real(model, sampler.proposed_inputs, ps, st)
@@ -52,7 +54,7 @@ function sample_step!(sampler::MCMCSampler, basis, model, kmax, ps, st)
     # 4. 並列受容・棄却判定
     blocks = ceil(Int, basis.n_walkers / basis.threads)
     @cuda threads=basis.threads blocks=blocks _accept_reject_kernel!(
-        basis.states, sampler.proposed_states,
+        basis.states, sampler.proposed_states, sampler.h_factor,
         log_psi_current_real, log_psi_proposed_real,
         sampler.rand_vals, basis.n_modes
     )
@@ -63,7 +65,7 @@ end
 """
 各ウォーカーごとにメトロポリス判定を行い、受容なら状態を更新するカーネル
 """
-function _accept_reject_kernel!(states, proposed_states, log_psi_cur_real, log_psi_prop_real, rand_vals, n_modes)
+function _accept_reject_kernel!(states, proposed_states, h_factor, log_psi_cur_real, log_psi_prop_real, rand_vals, n_modes)
     # 自分が担当するウォーカー(列)のインデックス
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     
@@ -72,7 +74,7 @@ function _accept_reject_kernel!(states, proposed_states, log_psi_cur_real, log_p
         log_P = 2 * (log_psi_prop_real[w] - log_psi_cur_real[w])
         
         # log(乱数) < log(P) ならば受容
-        if log(rand_vals[w]) < log_P
+        if log(rand_vals[w]) < log_P + log(h_factor[w])
             # 受容: proposed_states の内容を states に上書きコピー
             for m in 1:n_modes
                 for s in 1:3
