@@ -21,15 +21,15 @@ using .Optimise
 
 function main()
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    k_max = 0               # カットオフ波数 
-    n_particles = 10        # 全粒子数 N
+    k_max = 5               # カットオフ波数 
+    n_particles = 6         # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
     n_walkers = 200         # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
-    n_interval = 100          # サンプリングのインターバル
-    n_epochs = 2000        # 総学習Epoch数
+    n_interval = 20         # サンプリングのインターバル
+    n_epochs = 10000        # 総学習Epoch数
     zero = div(2 * k_max, 2) + 1
 
     # ハミルトニアン係数（接触相互作用）
@@ -68,8 +68,10 @@ function main()
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for _ in 1:n_thermal
         sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        ## println(basis.states[:, :, 1])
     end
     println("熱平衡化が完了しました。")
+    ## exit()
 
     # === 4. メイン学習ループ ===
     for epoch in 1:n_epochs
