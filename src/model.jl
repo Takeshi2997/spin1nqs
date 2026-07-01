@@ -22,7 +22,7 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
 
         # 2. 全結合層
         Dense(input_features => hidden_dim, tanh),
-        ## Dense(hidden_dim => hidden_dim, tanh),
+        Dense(hidden_dim => hidden_dim, tanh),
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力
@@ -50,7 +50,7 @@ function eval_complex_network(model, inputs, ps, st)
     outputs, _ = Lux.apply(model, Float32.(inputs), ps, st)
     
     # 複素数の波動関数 Ψ を構築
-    log_psi_real = outputs[1, :]
+    log_psi_real = outputs[1, :] 
     log_psi_imag = outputs[2, :]
 
     return log_psi_real .+ im .* log_psi_imag

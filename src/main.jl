@@ -25,7 +25,7 @@ function main()
     n_particles = 6         # 全粒子数 N
     target_Mz = 0           # 総磁化 M_z = 0 セクターに固定
     
-    n_walkers = 200         # 並列ウォーカー数 (バッチサイズ)
+    n_walkers = 1000         # 並列ウォーカー数 (バッチサイズ)
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
     n_interval = 20         # サンプリングのインターバル
@@ -53,7 +53,7 @@ function main()
     initialize_states!(basis, target_Mz)
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
-    nqs_model = build_momentum_nqs(k_max, hidden_dim=32)
+    nqs_model = build_momentum_nqs(k_max, hidden_dim=64)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     
     # 重み(ps)と状態(st)をGPUへ転送

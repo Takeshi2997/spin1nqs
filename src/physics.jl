@@ -243,7 +243,7 @@ end
 Updates the proposed states based on the current states and transition parameters.
 """
 function _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, id, w)
-    # 状態をコピーして更新S
+    # 状態をコピーして更新
     for s in 1:3
         for m in 1:n_modes
             proposed_states[m, s, id, w] = states[m, s, w]
@@ -264,6 +264,110 @@ function _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_n
     factor_create = Float32(n1_new) * Float32(m1_new == m2_new && s1_new == s2_new ? n2_new - 1 : n2_new)
 
     return sqrt(factor_annihilate * factor_create)
+end
+
+function compute_local_n_particle(
+    states::CuArray{Int32, 3}, 
+    log_psi_current::CuArray{ComplexF32, 1}, 
+    proposed_states::CuArray{Int32, 4},
+    matrix_elements::CuArray{Float32, 4},
+    params::SystemParams, 
+    threads::Int,
+    model, ps, st
+)
+    n_walkers = size(states, 3)
+    
+    # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
+    # proposed_states: [n_modes, 3, max_transitions, n_walkers]
+    # matrix_elements: [max_transitions, n_modes, 3, n_walkers]
+    blocks = ceil(Int, n_walkers / threads)
+    @cuda threads=threads blocks=blocks _n_particle_local_estimator(
+        states, 
+        proposed_states, 
+        matrix_elements, 
+        params.k_max,
+    )
+    
+    # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
+    # [n_modes, 3, max_transitions * n_walkers] に変形
+    flat_proposed = reshape(proposed_states, params.n_modes, 3, :)
+
+    # (C) ネットワークで一括評価
+    flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
+    
+    # (D) 元の形 [max_transitions, n_walkers] に戻す
+    log_psi_prop = reshape(flat_log_psi_prop, size(matrix_elements, 1), n_walkers)
+    
+    # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
+    # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
+    psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
+
+    # 粒子数の空間分布 n_x を計算
+    n_x = sum(matrix_elements .* psi_ratio, dims=1)
+
+    # 3. 合計して返す
+    n_x_loc = dropdims(n_x, dims=1)
+    
+    return n_x_loc
+end
+
+function _n_particle_local_estimator(
+    states,             # [n_modes, 3, n_walkers] 現在の状態
+    proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
+    matrix_elements,    # [MAX_TRANSITIONS, n_modes, 3, n_walkers] 行列要素 n_kk' を書き込むバッファ
+    k_max::Int
+)
+    n_modes = 2 * k_max + 1
+    w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
+
+    if w <= size(states, 3)
+        transition_idx = 1
+        
+        # 位置xの粒子数を計算
+        for x in 1:n_modes, s in 1:3
+
+            for m1 in 1:n_modes
+                n1 = states[m1, s, w]
+                if n1 == 0; continue; end
+                
+                for m2 in 1:n_modes
+                    n2 = states[m2, s, w]
+                    if n2 == 0; continue; end
+                    
+                    # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
+                    if (m1 == m2) && n2 < 2; continue; end
+                    
+                    # 現在の運動量
+                    k1 = m1 - k_max - 1
+                    k2 = m2 - k_max - 1
+                    
+                    # 運動量移動 q のループ
+                    # 状態をコピーして更新
+                    for s in 1:3
+                        for m in 1:n_modes
+                            proposed_states[m, s, id, w] = states[m, s, w]
+                        end
+                    end
+                    proposed_states[m1, s, id, w] -= 1
+                    proposed_states[m2, s, id, w] += 1
+
+                    # 行列要素の計算
+                    bose_factor = sqrt(states[m1, s, w] * proposed_states[m2, s, id, w])
+                    matrix_elements[transition_idx, x, s, w] = exp(-im * (k1 - k2) * 2 * π / n_modes * x) / 2 / π * bose_factor
+
+                    transition_idx += 1
+                end
+            end
+
+            # 使わなかった残りのスロットは行列要素を 0 にして無効化する
+            while transition_idx <= size(matrix_elements, 1)
+                matrix_elements[transition_idx, x, s, w] = 0.0f0
+                transition_idx += 1
+            end
+        end
+    end
+
+    return nothing
 end
 
 end # module

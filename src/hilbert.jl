@@ -73,12 +73,11 @@ function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{
     proposed_n_spin = CUDA.zeros(Float32, 3, n_walkers)
     
     blocks = ceil(Int, n_walkers / threads)
-    
     @cuda threads=threads blocks=blocks _proposal_kernel!(
-        states, proposed_states, n_spin, proposed_n_spin, h_factor, rand_vals, k_max, n_particles
+        states, proposed_states, n_spin, proposed_n_spin, h_factor, rand_vals, k_max
     )
     ## _proposal_kernel!(
-    ##     states, proposed_states, h_factor, rand_vals, k_max, n_particles
+    ##     states, proposed_states, h_factor, rand_vals, k_max
     ## )
  
     return nothing
@@ -87,7 +86,7 @@ end
 """
 各ウォーカーごとに独立して1つのランダムな2体散乱を提案するカーネル
 """
-function _proposal_kernel!(states, proposed_states, n_spin, proposed_n_spin, h_factor, rand_vals, k_max, n_particles)
+function _proposal_kernel!(states, proposed_states, n_spin, proposed_n_spin, h_factor, rand_vals, k_max)
     # ウォーカーのインデックスを指定
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     n_modes = 2 * k_max + 1
@@ -193,7 +192,19 @@ function _proposal_kernel!(states, proposed_states, n_spin, proposed_n_spin, h_f
             factor /= n1_new * n2_new
         end
 
-        h_factor[w] = 1 # factor
+        if s1 == s2 && m1 == m2
+            factor /= states[m1, s1, w] * (states[m2, s2, w] - 1)
+        else
+            factor /= states[m1, s1, w] * states[m2, s2, w]
+        end
+ 
+        if s1_new == s2_new && m1_new == m2_new
+            factor *= proposed_states[m1_new, s1_new, w] * (proposed_states[m2_new, s2_new, w] - 1)
+        else
+            factor *= proposed_states[m1_new, s1_new, w] * proposed_states[m2_new, s2_new, w]
+        end
+ 
+        h_factor[w] = factor
     end
 
     return nothing
