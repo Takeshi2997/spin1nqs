@@ -5,7 +5,7 @@ using Lux
 using ..Model
 # using ..Hilbert # 必要に応じて
 
-export SystemParams, PhysicsBuffer, compute_local_energy!
+export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_density_matrix
 
 """
 系の物理パラメータをまとめる構造体
@@ -57,7 +57,7 @@ end
 """
 局所エネルギー全体を評価するメイン関数
 """
-function compute_local_energy!(
+function compute_local_energy(
     states::CuArray{Int32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
     proposed_states::CuArray{Int32, 4},
@@ -266,22 +266,23 @@ function _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_n
     return sqrt(factor_annihilate * factor_create)
 end
 
-function compute_local_n_particle(
+function compute_local_density_matrix(
     states::CuArray{Int32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
-    proposed_states::CuArray{Int32, 4},
-    matrix_elements::CuArray{Float32, 4},
     params::SystemParams, 
     threads::Int,
     model, ps, st
 )
     n_walkers = size(states, 3)
     
+    proposed_states = CUDA.zeros(Int32, 2 * params.k_max + 1, 3, params.n_modes^2, n_walkers)
+    matrix_elements = CUDA.zeros(Float32, params.n_modes^2, n_walkers, 3)
+ 
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
-    # matrix_elements: [max_transitions, n_modes, 3, n_walkers]
+    # matrix_elements: [max_transitions, n_walkers, n_modes, 3]
     blocks = ceil(Int, n_walkers / threads)
-    @cuda threads=threads blocks=blocks _n_particle_local_estimator(
+    @cuda threads=threads blocks=blocks _density_matrix_local_estimator(
         states, 
         proposed_states, 
         matrix_elements, 
@@ -302,40 +303,50 @@ function compute_local_n_particle(
     # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
     psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
 
-    # 粒子数の空間分布 n_x を計算
-    n_x = sum(matrix_elements .* psi_ratio, dims=1)
-
     # 3. 合計して返す
-    n_x_loc = dropdims(n_x, dims=1)
+    # １粒子密度行列 rho_kq を計算
+    rho_kq = matrix_elements .* psi_ratio
     
-    return n_x_loc
+    return rho_kq
 end
 
-function _n_particle_local_estimator(
+function _density_matrix_local_estimator(
     states,             # [n_modes, 3, n_walkers] 現在の状態
     proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
-    matrix_elements,    # [MAX_TRANSITIONS, n_modes, 3, n_walkers] 行列要素 n_kk' を書き込むバッファ
+    matrix_elements,    # [MAX_TRANSITIONS, n_walkers, 3] 行列要素 n_kk' を書き込むバッファ
     k_max::Int
 )
     n_modes = 2 * k_max + 1
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
 
     if w <= size(states, 3)
-        transition_idx = 1
         
-        # 位置xの粒子数を計算
-        for x in 1:n_modes, s in 1:3
+        # spin sの粒子数を計算
+        for s in 1:3
+            transition_idx = 1
 
             for m1 in 1:n_modes
                 n1 = states[m1, s, w]
-                if n1 == 0; continue; end
+                if n1 == 0
+                    matrix_elements[transition_idx, w, s] = 0.0f0
+                    transition_idx += 1
+                    continue
+                end
                 
                 for m2 in 1:n_modes
                     n2 = states[m2, s, w]
-                    if n2 == 0; continue; end
+                    if n2 == 0 
+                        matrix_elements[transition_idx, w, s] = 0.0f0
+                        transition_idx += 1
+                        continue
+                    end
                     
                     # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
-                    if (m1 == m2) && n2 < 2; continue; end
+                    if (m1 == m2) && n2 < 2 
+                        matrix_elements[transition_idx, w, s] = 0.0f0
+                        transition_idx += 1
+                        continue
+                    end
                     
                     # 現在の運動量
                     k1 = m1 - k_max - 1
@@ -345,24 +356,18 @@ function _n_particle_local_estimator(
                     # 状態をコピーして更新
                     for s in 1:3
                         for m in 1:n_modes
-                            proposed_states[m, s, id, w] = states[m, s, w]
+                            proposed_states[m, s, transition_idx, w] = states[m, s, w]
                         end
                     end
-                    proposed_states[m1, s, id, w] -= 1
-                    proposed_states[m2, s, id, w] += 1
+                    proposed_states[m1, s, transition_idx, w] -= 1
+                    proposed_states[m2, s, transition_idx, w] += 1
 
                     # 行列要素の計算
-                    bose_factor = sqrt(states[m1, s, w] * proposed_states[m2, s, id, w])
-                    matrix_elements[transition_idx, x, s, w] = exp(-im * (k1 - k2) * 2 * π / n_modes * x) / 2 / π * bose_factor
+                    bose_factor = sqrt(states[m1, s, w] * proposed_states[m2, s, transition_idx, w])
+                    matrix_elements[transition_idx, w, s] = bose_factor
 
                     transition_idx += 1
                 end
-            end
-
-            # 使わなかった残りのスロットは行列要素を 0 にして無効化する
-            while transition_idx <= size(matrix_elements, 1)
-                matrix_elements[transition_idx, x, s, w] = 0.0f0
-                transition_idx += 1
             end
         end
     end

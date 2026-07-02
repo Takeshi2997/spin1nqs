@@ -5,6 +5,7 @@ using Optimisers
 using Zygote
 using ComponentArrays
 using Printf
+using Dates
 
 # 自作モジュールの読み込み（同じディレクトリにあると仮定）
 include("hilbert.jl")
@@ -20,6 +21,26 @@ using .Physics
 using .Optimise
 
 function main()
+    dirname = "./data/" * Dates.format(now(), "yyyymmdd")
+    filename  = dirname * "/data.txt"
+    filename_nx  = dirname * "/distribution_n_particle.txt"
+    if !isdir(dirname)
+        mkdir(dirname)
+    end
+    if isfile(filename)
+        rm(filename)
+    end
+    if isfile(filename_nx)
+        rm(filename_nx)
+    end
+        
+    touch(filename)
+    touch(filename_nx)
+
+    open(filename, "a") do io
+        @printf(io, "Epoch, Re<E>, Im<E>, <n1>, <n2>, <n3>,\n")
+    end
+ 
     # === 1. 物理・シミュレーションパラメータの設定 ===
     k_max = 5               # カットオフ波数 
     n_particles = 6         # 全粒子数 N
@@ -29,8 +50,7 @@ function main()
     n_thermal = 500         # 熱平衡化のための空回しステップ数
     n_steps = 100           # 1エポック（学習の1打）あたりのサンプリング数
     n_interval = 20         # サンプリングのインターバル
-    n_epochs = 10000        # 総学習Epoch数
-    zero = div(2 * k_max, 2) + 1
+    n_epochs = 100        # 総学習Epoch数
 
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
@@ -53,7 +73,7 @@ function main()
     initialize_states!(basis, target_Mz)
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
-    nqs_model = build_momentum_nqs(k_max, hidden_dim=64)
+    nqs_model = build_momentum_nqs(k_max, hidden_dim=128)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     
     # 重み(ps)と状態(st)をGPUへ転送
@@ -93,14 +113,14 @@ function main()
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
 
             # 局所エネルギー E_loc の計算
-            E_loc = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+            E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
             
             E_mean = sum(E_loc) / n_walkers
             push!(E_loc_all, E_mean)
 
-            n1_mean = sum(basis.states[zero, 1, :]) / n_walkers
-            n2_mean = sum(basis.states[zero, 2, :]) / n_walkers
-            n3_mean = sum(basis.states[zero, 3, :]) / n_walkers
+            n1_mean = sum(basis.states[:, 1, :]) / n_walkers
+            n2_mean = sum(basis.states[:, 2, :]) / n_walkers
+            n3_mean = sum(basis.states[:, 3, :]) / n_walkers
             n1_all = push!(n1_all, n1_mean)
             n2_all = push!(n2_all, n2_mean)
             n3_all = push!(n3_all, n3_mean)
@@ -117,7 +137,7 @@ function main()
         # C. パラメータ更新のための勾配計算と更新
         inputs = Float32.(basis.states)
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
-        E_loc_latest = compute_local_energy!(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+        E_loc_latest = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
         delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest)
         learning_rate = 0.01f0
         ps .= ps .- learning_rate .* delta_p
@@ -125,15 +145,46 @@ function main()
         # D. 進捗の表示
         if epoch % 10 == 0 || epoch == 1
             @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f\n", epoch, E_real, E_imag, n1_mean, n2_mean, n3_mean)
+            open(filename, "a") do io
+                @printf(io, "%4d, %10.5f, %10.5f, %6.3f, %6.3f, %6.3f,\n", epoch, E_real, E_imag, n1_mean, n2_mean, n3_mean)
+            end
         end
     end
-    for _ in 1:100
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
-        inputs = Float32.(basis.states)
-        outputs = eval_complex_network(nqs_model, inputs, ps, st)
-        println(inputs[:, :, 1])
-        println(outputs[1, :])
+
+    # == 5. 粒子数分布の計算 ===
+    sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+    inputs = Float32.(basis.states)
+    outputs = eval_complex_network(nqs_model, inputs, ps, st)
+    rho_kq_loc = compute_local_density_matrix(basis.states, outputs, params, basis.threads, nqs_model, ps, st)
+    rho_kq_mean = Array(dropdims(sum(rho_kq_loc, dims=2), dims=2) ./ n_walkers)
+    rho1_kq = reshape(rho_kq_mean[:, 1], 2 * k_max + 1, 2 * k_max + 1)
+    rho2_kq = reshape(rho_kq_mean[:, 2], 2 * k_max + 1, 2 * k_max + 1)
+    rho3_kq = reshape(rho_kq_mean[:, 3], 2 * k_max + 1, 2 * k_max + 1)
+    rho1_kq = vec((rho1_kq + rho1_kq') ./ 2)
+    rho2_kq = vec((rho2_kq + rho2_kq') ./ 2)
+    rho3_kq = vec((rho3_kq + rho3_kq') ./ 2)
+
+    # フーリエ変換
+    x_grid = Float32.(range(-5, 5, length=1000))
+    k_list = Float32.((2 * π / 10) .* (-k_max:k_max))
+    q_list = vec(k_list .- k_list')
+    W = exp.(-1.0f0im .* x_grid .* q_list') ./ 10.0f0
+    n1_x_vec = real.(W * rho1_kq)
+    n2_x_vec = real.(W * rho1_kq)
+    n3_x_vec = real.(W * rho1_kq)
+
+    for x in 1:1000
+        n1_x = n1_x_vec[x]
+        n2_x = n2_x_vec[x]
+        n3_x = n3_x_vec[x]
+        open(filename_nx, "a") do io
+            @printf(io, "%4d, %6.3f, %6.3f, %6.3f,\n", x, n1_x, n2_x, n3_x)
+        end
     end
+
+    # === 6. 学習済みモデルの保存 ===
+    save_nqs_model(dirname, ps, st)
+    
     println("=== 学習が正常に終了しました ===")
 end
 

@@ -2,10 +2,12 @@ module Model
 
 using Lux
 using Zygote
+using JLD2
+using Functors
 using Random
-using NNlib # 活性化関数（tanh, geluなど）を使用するために必要
+using NNlib 
 
-export build_momentum_nqs, initialize_model, eval_complex_network, eval_complex_network_real, eval_complex_network_imag
+export build_momentum_nqs, save_nqs_model, load_nqs_model, initialize_model, eval_complex_network, eval_complex_network_real, eval_complex_network_imag
 
 """
 波数空間のスピン1ボゾン系向けNQSを構築する関数
@@ -22,7 +24,7 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
 
         # 2. 全結合層
         Dense(input_features => hidden_dim, tanh),
-        Dense(hidden_dim => hidden_dim, tanh),
+        ## Dense(hidden_dim => hidden_dim, tanh),
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力
@@ -30,6 +32,36 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
     )
     
     return model
+end
+
+"""
+保存処理 学習完了後やチェックポイント
+"""
+function save_nqs_model(dirname, ps_gpu, st_gpu)
+    # 1. GPU (CuArray) から CPU (標準のArray) へ変換
+    ps_cpu = fmap(Array, ps_gpu)
+    st_cpu = fmap(Array, st_gpu)
+    
+    # 2. JLD2でファイルに保存
+    num_params = Lux.parameterlength(ps_cpu)
+    filename = dirname * "/nqs_model_$(num_params).jld2"
+    @save filename ps_cpu st_cpu
+    println("モデルを $(filename) に保存しました。")
+end
+
+"""
+読み込み処理 計算の再開やデータ解析時
+"""
+function load_nqs_model(filename)
+    # 1. JLD2ファイルからCPUメモリへ読み込み
+    @load filename ps_cpu st_cpu
+    
+    # 2. GPUへ転送
+    ps_gpu = fmap(x -> CuArray{Float32}(x), ps_cpu)
+    st_gpu = fmap(x -> CuArray{Float32}(x), st_cpu)
+    
+    println("モデルを $(filename) から読み込み、GPUに転送しました。")
+    return ps_gpu, st_gpu
 end
 
 """
