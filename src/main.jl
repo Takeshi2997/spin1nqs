@@ -48,10 +48,10 @@ function main()
     sys_config = config["system"]
     k_max = sys_config["k_max"]
     n_particles = sys_config["n_particles"]
-    hbar2_over_2m = sys_config["hbar2_over_2m"]
-    c0 = sys_config["c0"]
-    c1 = sys_config["c1"]
-    target_Mz = sys_config["target_Mz"]
+    hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
+    c0 = Float32(sys_config["c0"])
+    c1 = Float32(sys_config["c1"])
+    target_Mz = Float32(sys_config["target_Mz"])
 
     # 学習設定の読み込み
     train_config = config["training"]
@@ -60,6 +60,9 @@ function main()
     n_steps = train_config["n_steps"]
     n_interval = train_config["n_interval"]
     n_epochs = train_config["n_epochs"]
+    learning_rate = Float32(train_config["learning_rate"])
+    epsilon = Float32(train_config["epsilon"])
+    epsilon2 = Float32(train_config["epsilon2"])
 
     # モデル設定の読み込み
     model_config = config["model"]
@@ -156,8 +159,7 @@ function main()
         inputs = Float32.(basis.states)
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest)
-        learning_rate = 0.01f0
+        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest, epsilon, epsilon2)
         ps .= ps .- learning_rate .* delta_p
 
         # D. 進捗の表示
