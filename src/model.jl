@@ -37,14 +37,14 @@ end
 """
 保存処理 学習完了後やチェックポイント
 """
-function save_nqs_model(dirname, ps_gpu, st_gpu)
+function save_nqs_model(dirname, epoch, ps_gpu, st_gpu)
     # 1. GPU (CuArray) から CPU (標準のArray) へ変換
     ps_cpu = fmap(Array, ps_gpu)
     st_cpu = fmap(Array, st_gpu)
     
     # 2. JLD2でファイルに保存
     num_params = Lux.parameterlength(ps_cpu)
-    filename = dirname * "/nqs_model_$(num_params).jld2"
+    filename = dirname * "/nqs_model__$(num_params)_epoch$(epoch).jld2"
     @save filename ps_cpu st_cpu
     println("モデルを $(filename) に保存しました。")
 end

@@ -305,6 +305,7 @@ function compute_local_density_matrix(
 
     # 3. 合計して返す
     # １粒子密度行列 rho_kq を計算
+
     rho_kq = matrix_elements .* psi_ratio
     
     return rho_kq
@@ -333,16 +334,9 @@ function _density_matrix_local_estimator(
                     continue
                 end
                 
-                for m2 in 1:n_modes
+                for m2 in m1+1:n_modes
                     n2 = states[m2, s, w]
                     if n2 == 0 
-                        matrix_elements[transition_idx, w, s] = 0.0f0
-                        transition_idx += 1
-                        continue
-                    end
-                    
-                    # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
-                    if (m1 == m2) && n2 < 2 
                         matrix_elements[transition_idx, w, s] = 0.0f0
                         transition_idx += 1
                         continue

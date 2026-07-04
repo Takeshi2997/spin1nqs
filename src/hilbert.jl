@@ -102,12 +102,12 @@ function _proposal_kernel!(states, proposed_states, n_spin, proposed_n_spin, h_f
         # 2. スピン交換プロセス
         s1, s2, s1_new, s2_new = 0, 0, 0, 0
         rand_val = rand_vals[6, w]
-        # 33%の確率で (0, 0) -> (1, 3) に遷移
+        # 33%の確率で (0, 0) -> (1, -1) に遷移
         if rand_val < 0.33f0
             s1, s2 = 2, 2
             s1_new, s2_new = 1, 3
 
-        # 33%の確率で (1, 3) -> (0, 0) に遷移
+        # 33%の確率で (1, -1) -> (0, 0) に遷移
         elseif rand_val < 0.66f0
             s1, s2 = 1, 3
             s1_new, s2_new = 2, 2
