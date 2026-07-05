@@ -5,7 +5,7 @@ using Lux
 using ..Model
 # using ..Hilbert # 必要に応じて
 
-export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_density_matrix
+export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_density_matrix
 
 """
 系の物理パラメータをまとめる構造体
@@ -265,6 +265,141 @@ function _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_n
 
     return sqrt(factor_annihilate * factor_create)
 end
+
+function compute_local_correlation(
+    states::CuArray{Int32, 3}, 
+    log_psi_current::CuArray{ComplexF32, 1}, 
+    k_max::Int,
+    max_transitions::Int,
+    threads::Int,
+    model, ps, st
+)
+    n_walkers = size(states, 3)
+    n_modes = 2 * k_max + 1
+
+    proposed_states = CUDA.zeros(Int32, n_modes, 3, max_transitions, n_walkers)
+    matrix_elements = CUDA.zeros(Float32, max_transitions, n_walkers, n_modes, 3)
+ 
+    # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
+    # proposed_states: [n_modes, 3, max_transitions, n_walkers]
+    # matrix_elements: [max_transitions, n_walkers, n_modes, 3]
+    blocks = ceil(Int, n_walkers / threads)
+    @cuda threads=threads blocks=blocks _density_matrix_local_estimator(
+        states, 
+        proposed_states, 
+        matrix_elements, 
+        k_max,
+    )
+
+    # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
+    # [n_modes, 3, max_transitions * n_walkers] に変形
+    flat_proposed = reshape(proposed_states, n_modes, 3, :)
+
+    # (C) ネットワークで一括評価
+    flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
+    
+    # (D) 元の形 [max_transitions, n_walkers] に戻す
+    log_psi_prop = reshape(flat_log_psi_prop, size(matrix_elements, 1), n_walkers)
+    
+    # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
+    # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
+    psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
+
+    # 3. 合計して返す
+    # 相関関数 を計算
+    rho2_q = dropdims(sum(matrix_elements .* psi_ratio, dims=1), dims=1)
+    
+    return rho2_q
+end
+
+
+"""
+全ウォーカーのすべての2体散乱プロセスを列挙し、運動量空間の相関を計算するカーネル
+"""
+function _correlation_kernel!(
+    states,             # [n_modes, 3, n_walkers] 現在の状態
+    proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
+    matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
+    k_max::Int
+)
+    n_modes = 2 * k_max + 1
+    w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
+
+    if w <= size(states, 3)
+        
+        # spin sの粒子数を計算
+        for s in 1:3, q in 1:k_max
+            transition_idx = 1
+        
+            for m1 in 1:n_modes
+                n1 = states[m1, s, w]
+                if n1 == 0; continue; end
+                
+                for m2 in 1:n_modes
+                    n2 = states[m2, s, w]
+                    if n2 == 0; continue; end
+
+                    # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
+                    if m1 == m2 && n2 < 2; continue; end
+                    
+                    # 遷移する前(消滅演算子)の因子
+                    factor_annihilate = Float32(n1) * Float32(m1 == m2 ? n2 - 1 : n2)
+ 
+                    # 現在の運動量
+                    k1 = m1 - k_max - 1
+                    k2 = m2 - k_max - 1
+                    
+                    # 散乱後の運動量
+                    k1_new = k1 + q
+                    k2_new = k2 - q
+
+                    m1_new = k1_new + k_max + 1
+                    m2_new = k2_new + k_max + 1
+
+                    if m1_new >= 1 && m1_new <= n_modes && m2_new >= 1 && m2_new <= n_modes
+                                               
+                        # 状態をコピーして更新
+                        _update_proposed_states!(proposed_states, states, n_modes, m1, s, m2, s, m1_new, s, m2_new, s, transition_idx, w)
+                        
+                        # 行列要素の計算
+                        bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
+                        matrix_elements[transition_idx, w, k_max + 1 + q, s] = bose_factor
+
+                        transition_idx += 1
+                    end
+
+                    # 散乱後の運動量
+                    k1_new = k1 - q
+                    k2_new = k2 + q
+
+                    m1_new = k1_new + k_max + 1
+                    m2_new = k2_new + k_max + 1
+
+                    if m1_new >= 1 && m1_new <= n_modes && m2_new >= 1 && m2_new <= n_modes
+                                               
+                        # 状態をコピーして更新
+                        _update_proposed_states!(proposed_states, states, n_modes, m1, s, m2, s, m1_new, s, m2_new, s, transition_idx, w)
+                        
+                        # 行列要素の計算
+                        bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
+                        matrix_elements[transition_idx, w, k_max + 1 - q, s] = bose_factor
+
+                        transition_idx += 1
+                    end
+                end
+            end
+
+            while transition_idx <= size(matrix_elements, 1)
+                matrix_elements[transition_idx, w, k_max + 1 + q, s] = 0.0f0
+                transition_idx += 1
+                matrix_elements[transition_idx, w, k_max + 1 - q, s] = 0.0f0
+                transition_idx += 1
+            end
+        end
+    end
+    return nothing
+end
+
 
 function compute_local_density_matrix(
     states::CuArray{Int32, 3}, 

@@ -1,5 +1,5 @@
 [system]
-k_max = 3
+k_max = 1
 n_particles = 6
 hbar2_over_2m = 1.0
 c0 = 0.0
@@ -14,7 +14,7 @@ n_interval = 4
 n_epochs = 20000
 learning_rate = 0.01
 epsilon = 0.01
-epsilon2 = 0.1
+epsilon2 = 1
 
 [model]
 hidden_dim = 64

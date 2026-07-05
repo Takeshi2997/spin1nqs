@@ -51,7 +51,7 @@ function main()
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
     c1 = Float32(sys_config["c1"])
-    target_Mz = Float32(sys_config["target_Mz"])
+    target_Mz = sys_config["target_Mz"]
 
     # 学習設定の読み込み
     train_config = config["training"]
@@ -170,7 +170,7 @@ function main()
             end
         end
         if epoch % save_iter == 0
-            eval_space_distribution(basis.states, outputs, k_max, params, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+            eval_space_correlation(basis.states, outputs, k_max, size(buffer.matrix_elements, 1), basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
         end
     end
@@ -178,43 +178,50 @@ function main()
     println("=== 学習が正常に終了しました ===")
 end
 
-function eval_space_distribution(states, outputs, k_max, params, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
-    filename  = dirname * "/distribution_n_particle_epoch$(epoch).txt"
+function eval_space_correlation(states, outputs, k_max, max_transitions, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+    filename  = dirname * "/space_correlation_epoch$(epoch).txt"
     if isfile(filename)
         rm(filename)
     end
     touch(filename)
 
-    n1_mean = Array(dropdims(sum(states[:, 1, :], dims=2), dims=2) ./ n_walkers)
-    n2_mean = Array(dropdims(sum(states[:, 2, :], dims=2), dims=2) ./ n_walkers)
-    n3_mean = Array(dropdims(sum(states[:, 3, :], dims=2), dims=2) ./ n_walkers)
+    n1_mean = sum(states[:, 1, :] ./ n_walkers)
+    n2_mean = sum(states[:, 2, :] ./ n_walkers)
+    n3_mean = sum(states[:, 3, :] ./ n_walkers)
+    n1_square_mean = sum(states[:, 1, :] .* states[:, 1, :] ./ n_walkers)
+    n2_square_mean = sum(states[:, 2, :] .* states[:, 2, :] ./ n_walkers)
+    n3_square_mean = sum(states[:, 3, :] .* states[:, 3, :] ./ n_walkers)
 
-    rho_kq_loc = compute_local_density_matrix(states, outputs, params, threads, nqs_model, ps, st)
-    rho_kq_mean = Array(dropdims(sum(rho_kq_loc, dims=2), dims=2) ./ n_walkers)
-    rho1_kq = diagm(n1_mean) .+ reshape(rho_kq_mean[:, 1], 2 * k_max + 1, 2 * k_max + 1)
-    rho2_kq = diagm(n2_mean) .+ reshape(rho_kq_mean[:, 2], 2 * k_max + 1, 2 * k_max + 1)
-    rho3_kq = diagm(n3_mean) .+ reshape(rho_kq_mean[:, 3], 2 * k_max + 1, 2 * k_max + 1)
-    rho1_kq = (rho1_kq + rho1_kq') ./ 2
-    rho2_kq = (rho2_kq + rho2_kq') ./ 2
-    rho3_kq = (rho3_kq + rho3_kq') ./ 2
+    n1_diag = Float32(n1_square_mean .- n1_mean)
+    n2_diag = Float32(n2_square_mean .- n2_mean)
+    n3_diag = Float32(n3_square_mean .- n3_mean)
+
+    rho2_q_loc = compute_local_correlation(states, outputs, k_max, max_transitions, threads, nqs_model, ps, st)
+    rho2_q_mean = Array(dropdims(sum(rho2_q_loc, dims=1), dims=1) ./ n_walkers)
+    rho2_q_1 = rho2_q_mean[:, 1]
+    rho2_q_2 = rho2_q_mean[:, 2]
+    rho2_q_3 = rho2_q_mean[:, 3]
+    rho2_q_1[k_max + 1] = n1_diag
+    rho2_q_2[k_max + 1] = n2_diag
+    rho2_q_3[k_max + 1] = n3_diag
 
     # フーリエ変換
     x_grid = Float32.(range(-5, 5, length=1000))
     k_list = Float32.((2 * π / 10) .* (-k_max:k_max))
     W = exp.(-1.0f0im .* x_grid .* k_list')
-    n1_x_vec = real.(diag(Diagonal(W * (rho1_kq * W')))) ./ 10.0f0
-    n2_x_vec = real.(diag(Diagonal(W * (rho2_kq * W')))) ./ 10.0f0
-    n3_x_vec = real.(diag(Diagonal(W * (rho3_kq * W')))) ./ 10.0f0
+    cor1_x_vec = real.(W * rho2_q_1) ./ 10.0f0^2
+    cor2_x_vec = real.(W * rho2_q_2) ./ 10.0f0^2
+    cor3_x_vec = real.(W * rho2_q_3) ./ 10.0f0^2
 
     open(filename, "a") do io
         @printf(io, "x, <n1>, <n2>, <n3>,\n")
     end
     for x in 1:1000
-        n1_x = n1_x_vec[x]
-        n2_x = n2_x_vec[x]
-        n3_x = n3_x_vec[x]
+        cor1_x = cor1_x_vec[x]
+        cor2_x = cor2_x_vec[x]
+        cor3_x = cor3_x_vec[x]
         open(filename, "a") do io
-            @printf(io, "%6.3f, %6.3f, %6.3f, %6.3f,\n", x_grid[x], n1_x, n2_x, n3_x)
+            @printf(io, "%6.3f, %6.3f, %6.3f, %6.3f,\n", x_grid[x], cor1_x, cor2_x, cor3_x)
         end
     end
 
