@@ -109,10 +109,8 @@ function main()
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for _ in 1:n_thermal
         sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
-        ## println(basis.states[:, :, 1])
     end
     println("熱平衡化が完了しました。")
-    ## exit()
 
     # === 4. メイン学習ループ ===
     for epoch in 1:n_epochs

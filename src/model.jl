@@ -82,7 +82,7 @@ function eval_complex_network(model, inputs, ps, st)
     outputs, _ = Lux.apply(model, Float32.(inputs), ps, st)
     
     # 複素数の波動関数 Ψ を構築
-    log_psi_real = outputs[1, :] 
+    log_psi_real = outputs[1, :]
     log_psi_imag = outputs[2, :]
 
     return log_psi_real .+ im .* log_psi_imag
