@@ -25,9 +25,7 @@ using .Optimise
 function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd")
     filename  = dirname * "/data.txt"
-    if !isdir(dirname)
-        mkdir(dirname)
-    end
+    mkpath(dirname)
     if isfile(filename)
         rm(filename)
     end
@@ -37,11 +35,10 @@ function main()
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    # 引数がない場合はデフォルトで local を読み込むようにしておくと便利です
     config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
     println("🔧 Loading configuration from: ", config_path)
     
-    # 2. TOMLファイルのパース（辞書型として読み込まれます）
+    # 2. TOMLファイルのパース
     config = TOML.parsefile(config_path)
 
     # システム設定の読み込み
@@ -96,7 +93,7 @@ function main()
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260706/nqs_model__1538_epoch13500.jld2")
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260708/nqs_model_770_epoch1000.jld2")
     
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
@@ -159,6 +156,15 @@ function main()
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
         delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest, epsilon, epsilon2)
+
+        # 相関関数の評価は ps 更新「前」に行う。
+        # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、
+        #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
+        #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
+        if epoch % save_iter == 0
+            eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+        end
+
         ps .= ps .- learning_rate .* delta_p
 
         # D. 進捗の表示
@@ -169,7 +175,6 @@ function main()
             end
         end
         if epoch % save_iter == 0
-            eval_space_correlation(basis.states, outputs, k_max, size(buffer.matrix_elements, 1), basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
         end
     end
@@ -177,26 +182,28 @@ function main()
     println("=== 学習が正常に終了しました ===")
 end
 
-function eval_space_correlation(states, outputs, k_max, max_transitions, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
     filename  = dirname * "/space_correlation_epoch$(epoch).txt"
     if isfile(filename)
         rm(filename)
     end
     touch(filename)
 
-    n1_mean = sum(states[:, 1, :] ./ n_walkers)
-    n2_mean = sum(states[:, 2, :] ./ n_walkers)
-    n3_mean = sum(states[:, 3, :] ./ n_walkers)
-    n1_square_mean = sum(states[:, 1, :] .* states[:, 1, :] ./ n_walkers)
-    n2_square_mean = sum(states[:, 2, :] .* states[:, 2, :] ./ n_walkers)
-    n3_square_mean = sum(states[:, 3, :] .* states[:, 3, :] ./ n_walkers)
-
-    n1_diag = Float32(n1_square_mean .- n1_mean)
-    n2_diag = Float32(n2_square_mean .- n2_mean)
-    n3_diag = Float32(n3_square_mean .- n3_mean)
-
-    rho2_q_loc = compute_local_correlation(states, outputs, k_max, max_transitions, threads, nqs_model, ps, st)
-    rho2_q_mean = Array(dropdims(sum(rho2_q_loc, dims=1), dims=1) ./ n_walkers)
+    # 現在の 186-195 行目を以下で置き換え
+    # rho2,s(q=0) = <N_s (N_s - 1)>, N_s = sum_k n_{k,s}
+    # ψ を変えない全項の和なので、占有数だけから直接計算できる。
+    Ns = sum(states, dims=1)
+    Ns_diag = Ns .* (Ns .- Int32(1))
+    Ns_diag_mean = Array(dropdims(sum(Ns_diag, dims=3), dims=(1,3))) ./ n_walkers 
+    
+    n1_diag = Float32(Ns_diag_mean[1])
+    n2_diag = Float32(Ns_diag_mean[2])
+    n3_diag = Float32(Ns_diag_mean[3])
+    
+    # 新しい compute_local_correlation の戻り値は [n_modes(=q平面), 3, n_walkers]。
+    # ウォーカー方向 (dims=3) で平均する (旧レイアウト [n_walkers, n_modes, 3] では dims=1 だった)
+    rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
+    rho2_q_mean = Array(dropdims(sum(rho2_q_loc, dims=3), dims=3) ./ n_walkers)   # [n_modes, 3]
     rho2_q_1 = rho2_q_mean[:, 1]
     rho2_q_2 = rho2_q_mean[:, 2]
     rho2_q_3 = rho2_q_mean[:, 3]
@@ -205,12 +212,13 @@ function eval_space_correlation(states, outputs, k_max, max_transitions, threads
     rho2_q_3[k_max + 1] = n3_diag
 
     # フーリエ変換
-    x_grid = Float32.(range(-5, 5, length=1000))
-    k_list = Float32.((2 * π / 10) .* (-k_max:k_max))
+    L_box = Float32(2 * k_max + 1)
+    x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
+    k_list = Float32.((2 * π / L_box) .* (-k_max:k_max))
     W = exp.(-1.0f0im .* x_grid .* k_list')
-    cor1_x_vec = real.(W * rho2_q_1) ./ 10.0f0^2
-    cor2_x_vec = real.(W * rho2_q_2) ./ 10.0f0^2
-    cor3_x_vec = real.(W * rho2_q_3) ./ 10.0f0^2
+    cor1_x_vec = real.(W * rho2_q_1) ./ L_box
+    cor2_x_vec = real.(W * rho2_q_2) ./ L_box
+    cor3_x_vec = real.(W * rho2_q_3) ./ L_box
 
     open(filename, "a") do io
         @printf(io, "x, <n1>, <n2>, <n3>,\n")

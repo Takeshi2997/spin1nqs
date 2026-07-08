@@ -44,8 +44,12 @@ function initialize_states!(basis::MomentumSpinorBasis, target_Mz::Int)
     
     # CPU上で初期状態のベース (L × 3行列) を作成
     base_state = zeros(Int32, L, 3)
-    base_state[zero, 2] = N - target_Mz
-    base_state[zero, 3] = target_Mz
+    base_state[zero, 2] = N - abs(target_Mz)   # sz = 0
+    if target_Mz >= 0
+        base_state[zero, 3] = target_Mz         # sz = +1
+    else
+        base_state[zero, 1] = -target_Mz        # sz = -1 (負のMzで負の占有数を書かない)
+    end
 
     # 作成したベース状態を、全ウォーカー(バッチ)分コピーして3次元配列にする
     # repmatのような操作を行い、CPU上で [L, 3, n_walkers] の配列を作る
@@ -100,7 +104,9 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
 
         # 2. ターゲットの波数・スピンを選択            
         m1, s1 = k_max + 1, 2
-        target = trunc(Int32, rand_vals[1, w] * n_particles) + 1
+        # CUDA.rand (cuRAND) は区間 (0,1] で 1.0f0 を含むため、target が
+        # n_particles を超えると選択ループがフォールスルーして状態が壊れる。クランプで防ぐ。
+        target = min(trunc(Int32, rand_vals[1, w] * n_particles) + 1, n_particles)
         count = Int32(0)
         for m in 1:n_modes, s in 1:3
             occ = tmp_states[m, s, w]
@@ -113,7 +119,7 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
         tmp_states[m1, s1, w] -= 1
         
         m2, s2 = k_max + 1, 2
-        target = trunc(Int32, rand_vals[2, w] * (n_particles - 1)) + 1
+        target = min(trunc(Int32, rand_vals[2, w] * (n_particles - 1)) + 1, n_particles - 1)
         count = Int32(0)
         for m in 1:n_modes, s in 1:3
             occ = tmp_states[m, s, w]

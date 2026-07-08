@@ -133,8 +133,8 @@ function _scattering_kernel!(
         transition_idx = 1
         
         # 定数部分
-        v0 = c0 / (2.0f0 * π)
-        v1 = c1 / (2.0f0 * π)
+        v0 = c0 / Float32(n_modes)
+        v1 = c1 / Float32(n_modes)
 
         # 散乱する2粒子のモードを選択
         for m1 in 1:n_modes, s1 in 1:3
@@ -270,44 +270,50 @@ function compute_local_correlation(
     states::CuArray{Int32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
     k_max::Int,
-    max_transitions::Int,
     threads::Int,
     model, ps, st
 )
     n_walkers = size(states, 3)
     n_modes = 2 * k_max + 1
+    n_q = 2 * k_max            # q = -k_max..-1, +1..+k_max (q=0 は対角項なので別扱い)
+    max_t_per = n_modes^2      # 1つの (s, q) ブロックが必要とするスロット数の上限
+    total_t = 3 * n_q * max_t_per
 
-    proposed_states = CUDA.zeros(Int32, n_modes, 3, max_transitions, n_walkers)
-    matrix_elements = CUDA.zeros(Float32, max_transitions, n_walkers, n_modes, 3)
+    # 通しインデックス total_t で proposed_states と matrix_elements を 1対1 対応させる
+    proposed_states = CUDA.zeros(Int32, n_modes, 3, total_t, n_walkers)
+    matrix_elements = CUDA.zeros(Float32, total_t, n_walkers)
  
-    # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
-    # proposed_states: [n_modes, 3, max_transitions, n_walkers]
-    # matrix_elements: [max_transitions, n_walkers, n_modes, 3]
+    # (A) 遷移先状態 x' と行列要素を一括生成
     blocks = ceil(Int, n_walkers / threads)
     @cuda threads=threads blocks=blocks _correlation_kernel!(
         states, 
         proposed_states, 
         matrix_elements, 
         k_max,
+        max_t_per,
     )
 
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
-    # [n_modes, 3, max_transitions * n_walkers] に変形
     flat_proposed = reshape(proposed_states, n_modes, 3, :)
 
     # (C) ネットワークで一括評価
     flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
     
-    # (D) 元の形 [max_transitions, n_walkers] に戻す
-    log_psi_prop = reshape(flat_log_psi_prop, size(matrix_elements, 1), n_walkers)
+    # (D) 元の形 [total_t, n_walkers] に戻す
+    log_psi_prop = reshape(flat_log_psi_prop, total_t, n_walkers)
     
-    # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
-    # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
+    # (E) 各スロットの寄与 = 行列要素 × そのスロット自身の遷移先の ψ 比
     psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
+    contrib = matrix_elements .* psi_ratio                       # [total_t, n_walkers]
 
-    # 3. 合計して返す
-    # 相関関数 を計算
-    rho2_q = dropdims(sum(matrix_elements .* psi_ratio, dims=1), dims=1)
+    # (F) ブロック構造 [max_t_per, n_q, 3, n_walkers] に戻し、スロット方向に和をとる
+    contrib = reshape(contrib, max_t_per, n_q, 3, n_walkers)
+    rho2_qs = dropdims(sum(contrib, dims=1), dims=1)             # [n_q, 3, n_walkers]
+
+    # (G) 旧来の [n_modes(=q平面), 3, n_walkers] レイアウトに詰め直す (q=0 平面はゼロのまま)
+    rho2_q = CUDA.zeros(ComplexF32, n_modes, 3, n_walkers)
+    rho2_q[1:k_max, :, :] .= rho2_qs[1:k_max, :, :]    # q = -k_max..-1
+    rho2_q[k_max+2:n_modes, :, :] .= rho2_qs[k_max+1:n_q, :, :] # q = +1..+k_max
     
     return rho2_q
 end
@@ -318,85 +324,66 @@ end
 """
 function _correlation_kernel!(
     states,             # [n_modes, 3, n_walkers] 現在の状態
-    proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
-    matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
-    k_max::Int
+    proposed_states,    # [n_modes, 3, total_t, n_walkers] 遷移先を書き込むバッファ
+    matrix_elements,    # [total_t, n_walkers] 行列要素を書き込むバッファ
+    k_max::Int,
+    max_t_per::Int      # (s, q) ブロックあたりのスロット数 (= n_modes^2)
 )
     n_modes = 2 * k_max + 1
+    n_q = 2 * k_max
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
 
     if w <= size(states, 3)
-        
-        # spin sの粒子数を計算
-        for s in 1:3, q in 1:k_max
-            transition_idx = 1
-        
-            for m1 in 1:n_modes
-                n1 = states[m1, s, w]
-                if n1 == 0; continue; end
-                
-                for m2 in 1:n_modes
-                    n2 = states[m2, s, w]
-                    if n2 == 0; continue; end
+        for s in 1:3
+            for qi in 1:n_q
+                # qi = 1..k_max -> q = -k_max..-1,  qi = k_max+1..2k_max -> q = +1..+k_max
+                q = qi <= k_max ? qi - k_max - 1 : qi - k_max
+                base = ((s - 1) * n_q + (qi - 1)) * max_t_per
+                t = 1
 
-                    # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
-                    if m1 == m2 && n2 < 2; continue; end
+                for m1 in 1:n_modes
+                    n1 = states[m1, s, w]
+                    if n1 == 0; continue; end
                     
-                    # 遷移する前(消滅演算子)の因子
-                    factor_annihilate = Float32(n1) * Float32(m1 == m2 ? n2 - 1 : n2)
- 
-                    # 現在の運動量
-                    k1 = m1 - k_max - 1
-                    k2 = m2 - k_max - 1
-                    
-                    # 散乱後の運動量
-                    k1_new = k1 + q
-                    k2_new = k2 - q
+                    for m2 in 1:n_modes
+                        n2 = states[m2, s, w]
+                        if n2 == 0; continue; end
 
-                    m1_new = k1_new + k_max + 1
-                    m2_new = k2_new + k_max + 1
-
-                    if m1_new >= 1 && m1_new <= n_modes && m2_new >= 1 && m2_new <= n_modes
-                                               
-                        # 状態をコピーして更新
-                        _update_proposed_states!(proposed_states, states, n_modes, m1, s, m2, s, m1_new, s, m2_new, s, transition_idx, w)
+                        # 同一モードから2つ選ぶ場合は、2個以上いる必要がある
+                        if m1 == m2 && n2 < 2; continue; end
                         
-                        # 行列要素の計算
-                        bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
-                        matrix_elements[transition_idx, w, k_max + 1 + q, s] = bose_factor
+                        # 散乱後のモード
+                        m1_new = m1 + q
+                        m2_new = m2 - q
+                        if m1_new < 1 || m1_new > n_modes || m2_new < 1 || m2_new > n_modes
+                            continue
+                        end
 
-                        transition_idx += 1
-                    end
-
-                    # 散乱後の運動量
-                    k1_new = k1 - q
-                    k2_new = k2 + q
-
-                    m1_new = k1_new + k_max + 1
-                    m2_new = k2_new + k_max + 1
-
-                    if m1_new >= 1 && m1_new <= n_modes && m2_new >= 1 && m2_new <= n_modes
-                                               
-                        # 状態をコピーして更新
+                        transition_idx = base + t
+                        # 状態をコピーして更新 (このスロットは以後上書きされない)
                         _update_proposed_states!(proposed_states, states, n_modes, m1, s, m2, s, m1_new, s, m2_new, s, transition_idx, w)
-                        
-                        # 行列要素の計算
-                        bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
-                        matrix_elements[transition_idx, w, k_max + 1 - q, s] = bose_factor
 
-                        transition_idx += 1
+                        # 行列要素の計算
+                        factor_annihilate = Float32(n1) * Float32(m1 == m2 ? n2 - 1 : n2)
+                        matrix_elements[transition_idx, w] = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
+
+                        t += 1
                     end
                 end
-            end
 
-            while transition_idx <= size(matrix_elements, 1)
-                matrix_elements[transition_idx, w, k_max + 1 + q, s] = 0.0f0
-                transition_idx += 1
-                matrix_elements[transition_idx, w, k_max + 1 - q, s] = 0.0f0
-                transition_idx += 1
+                # 未使用スロット: 行列要素は0、提案状態には現在の状態を入れておく。
+                while t <= max_t_per
+                    transition_idx = base + t
+                    matrix_elements[transition_idx, w] = 0.0f0
+                    for ss in 1:3, m in 1:n_modes
+                        proposed_states[m, ss, transition_idx, w] = states[m, ss, w]
+                    end
+                    t += 1
+                end
             end
         end
     end
+
     return nothing
 end
 
