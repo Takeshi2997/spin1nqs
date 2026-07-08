@@ -44,7 +44,7 @@ function save_nqs_model(dirname, epoch, ps_gpu, st_gpu)
     
     # 2. JLD2でファイルに保存
     num_params = Lux.parameterlength(ps_cpu)
-    filename = dirname * "/nqs_model__$(num_params)_epoch$(epoch).jld2"
+    filename = dirname * "/nqs_model_$(num_params)_epoch$(epoch).jld2"
     @save filename ps_cpu st_cpu
     println("モデルを $(filename) に保存しました。")
 end
@@ -56,12 +56,8 @@ function load_nqs_model(filename)
     # 1. JLD2ファイルからCPUメモリへ読み込み
     @load filename ps_cpu st_cpu
     
-    # 2. GPUへ転送
-    ps_gpu = fmap(x -> CuArray{Float32}(x), ps_cpu)
-    st_gpu = fmap(x -> CuArray{Float32}(x), st_cpu)
-    
-    println("モデルを $(filename) から読み込み、GPUに転送しました。")
-    return ps_gpu, st_gpu
+    println("モデルを $(filename) から読み込みました。")
+    return ps_cpu, st_cpu
 end
 
 """

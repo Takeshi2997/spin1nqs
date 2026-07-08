@@ -68,16 +68,12 @@ function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{
     
     # 各ウォーカーに対して4つの乱数を用意する
     # [1]: 粒子1の選択用, [2]: 粒子2の選択用, [3]: 運動量qの選択用, [4]: スピン交換の分岐用
-    rand_vals = CUDA.rand(Float32, 6, n_walkers)
+    rand_vals = CUDA.rand(Float32, 4, n_walkers)
     tmp_states = CUDA.zeros(Int32, 2 * k_max + 1, 3, n_walkers)
-    n_spin = CUDA.zeros(Int32, 3, n_walkers)
-    proposed_n_spin = CUDA.zeros(Int32, 3, n_walkers)
-    n_moment = CUDA.zeros(Int32, 2 * k_max + 1, n_walkers)
-    proposed_n_moment = CUDA.zeros(Int32, 2 * k_max + 1, n_walkers)
     
     blocks = ceil(Int, n_walkers / threads)
     @cuda threads=threads blocks=blocks _proposal_kernel!(
-        states, proposed_states, tmp_states, n_spin, proposed_n_spin, n_moment, proposed_n_moment, h_factor, rand_vals, k_max, n_particles
+        states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles
     )
     ## _proposal_kernel!(
     ##     states, proposed_states, h_factor, rand_vals, k_max
@@ -89,7 +85,7 @@ end
 """
 各ウォーカーごとに独立して1つのランダムな2体散乱を提案するカーネル
 """
-function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed_n_spin, n_moment, proposed_n_moment, h_factor, rand_vals, k_max, n_particles)
+function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles)
     # ウォーカーのインデックスを指定
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     n_modes = 2 * k_max + 1
@@ -100,12 +96,10 @@ function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed
         for m in 1:n_modes, s in 1:3
             proposed_states[m, s, w] = states[m, s, w]
             tmp_states[m, s, w] = states[m, s, w]
-            n_spin[s, w] += states[m, s, w]
-            n_moment[m, w] += states[m, s, w]
         end
 
         # 2. ターゲットの波数・スピンを選択            
-        m1, s1 = 0, 0
+        m1, s1 = k_max + 1, 2
         target = trunc(Int32, rand_vals[1, w] * n_particles) + 1
         count = Int32(0)
         for m in 1:n_modes, s in 1:3
@@ -118,7 +112,7 @@ function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed
         end
         tmp_states[m1, s1, w] -= 1
         
-        m2, s2 = 0, 0
+        m2, s2 = k_max + 1, 2
         target = trunc(Int32, rand_vals[2, w] * (n_particles - 1)) + 1
         count = Int32(0)
         for m in 1:n_modes, s in 1:3
@@ -133,19 +127,19 @@ function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed
         
         # 3. スピンの交換
         s1_new, s2_new = s1, s2
-        rand_val = rand_vals[6, w]
-        if (s1 == 2 && s2 == 2) && rand_val < 0.8f0
+        rand_val = rand_vals[3, w]
+        if (s1 == 2 && s2 == 2) && rand_val < 0.5f0
             s1_new, s2_new = 1, 3
-        elseif (s1 == 1 && s2 == 3) && rand_val < 0.8f0
+        elseif (s1 == 1 && s2 == 3) && rand_val < 0.5f0
             s1_new, s2_new = 2, 2
-        elseif (s1 == 3 && s2 == 1) && rand_val < 0.8f0
+        elseif (s1 == 3 && s2 == 1) && rand_val < 0.5f0
             s1_new, s2_new = 2, 2
         else
             s1_new, s2_new = s1, s2
         end
 
         # 4. 散乱後の波数を計算
-        q = floor(Int, rand_vals[3, w] * n_modes) - k_max
+        q = floor(Int, rand_vals[4, w] * n_modes) - k_max
         k1 = m1 - k_max - 1
         k2 = m2 - k_max - 1
         k1_new = k1 + q
@@ -154,6 +148,7 @@ function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed
         m2_new = k2_new + k_max + 1
 
         if m1_new < 1 || m2_new < 1 || m1_new > n_modes || m2_new > n_modes
+            h_factor[w] = 1
             return
         end
         
@@ -164,45 +159,27 @@ function _proposal_kernel!(states, proposed_states, tmp_states, n_spin, proposed
         proposed_states[m2_new, s2_new, w] += 1
 
         # 6. Hastings因子の計算
-        factor = 1
-
-        for m in 1:n_modes, s in 1:3
-            proposed_n_spin[s, w] += proposed_states[m, s, w]
-            proposed_n_moment[m, w] += proposed_states[m, s, w]
-        end
-
-        n1 = n_spin[s1, w]
-        n2 = n_spin[s2, w]
-        if s1 == 2 && s2 == 2
-            factor /= n1 * (n2 - 1)
+        factor = 1f0
+        if s1 == s2 && m1 == m2
+            factor /= states[m1, s1, w] * (states[m2, s2, w] - 1)
         else
-            factor /= n1 * n2 * 2
+            factor /= states[m1, s1, w] * states[m2, s2, w] * 2
         end
 
-        n1_new = proposed_n_spin[s1_new, w]
-        n2_new = proposed_n_spin[s2_new, w]
-        if s1_new == 2 && s2_new == 2
-            factor *= n1_new * (n2_new - 1)
+        if s1_new == s2_new && m1_new == m2_new
+            factor *= proposed_states[m1_new, s1_new, w] * (proposed_states[m2_new, s2_new, w] - 1)
         else
-            factor *= n1_new * n2_new * 2
+            factor *= proposed_states[m1_new, s1_new, w] * proposed_states[m2_new, s2_new, w] * 2
         end
 
-        if n_modes > 1
-            n1 = n_moment[m1, w]
-            n2 = n_moment[m2, w]
-            if m1 == m2
-                factor /= n1 * (n2 - 1)
-            else
-                factor /= n1 * n2 * 2
-            end
- 
-            n1_new = proposed_n_moment[m1_new, w]
-            n2_new = proposed_n_moment[m2_new, w]
-            if m1_new == m2_new
-                factor *= n1_new * (n2_new - 1)
-            else 
-                factor *= n1_new * n2_new * 2
-            end
+        # ---- 追加: q の縮退度補正 ----
+        # 順方向: 行き先が同スピン・異運動量なら同じ終状態を与える q が2通り
+        if s1_new == s2_new && m1_new != m2_new
+            factor /= 2f0
+        end
+        # 逆方向: 元の2軌道が同スピン・異運動量なら逆過程の q が2通り
+        if s1 == s2 && m1 != m2
+            factor *= 2f0
         end
  
         h_factor[w] = factor

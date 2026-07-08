@@ -284,7 +284,7 @@ function compute_local_correlation(
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
     # matrix_elements: [max_transitions, n_walkers, n_modes, 3]
     blocks = ceil(Int, n_walkers / threads)
-    @cuda threads=threads blocks=blocks _density_matrix_local_estimator(
+    @cuda threads=threads blocks=blocks _correlation_kernel!(
         states, 
         proposed_states, 
         matrix_elements, 

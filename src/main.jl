@@ -96,6 +96,7 @@ function main()
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260706/nqs_model__1538_epoch13500.jld2")
     
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
@@ -107,7 +108,7 @@ function main()
 
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
-    for _ in 1:n_thermal
+    for step in 1:n_thermal
         sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
     end
     println("熱平衡化が完了しました。")
@@ -133,7 +134,7 @@ function main()
 
             # 局所エネルギー E_loc の計算
             E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-            
+
             E_mean = sum(E_loc) / n_walkers
             push!(E_loc_all, E_mean)
 
@@ -219,7 +220,7 @@ function eval_space_correlation(states, outputs, k_max, max_transitions, threads
         cor2_x = cor2_x_vec[x]
         cor3_x = cor3_x_vec[x]
         open(filename, "a") do io
-            @printf(io, "%6.3f, %6.3f, %6.3f, %6.3f,\n", x_grid[x], cor1_x, cor2_x, cor3_x)
+            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f,\n", x_grid[x], cor1_x, cor2_x, cor3_x)
         end
     end
 
