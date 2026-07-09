@@ -43,7 +43,7 @@ end
 """
 function _compute_kinetic(states::CuArray{Int32, 3}, params::SystemParams)
     # 波数ベクトル k = [-k_max, ..., k_max] を作成し、二乗する
-    k_vec = CuArray(Float32.(-params.k_max:params.k_max) .* 2 .* π ./ params.n_modes)
+    k_vec = CuArray(Float32.(-params.k_max:params.k_max))
     k2_vec = k_vec .^ 2 # サイズ: [n_modes]
     
     # statesの形状 [n_modes, 3, n_walkers] に対して、各モードの粒子数とk^2を掛けて足し合わせる
@@ -133,8 +133,8 @@ function _scattering_kernel!(
         transition_idx = 1
         
         # 定数部分
-        v0 = c0 / Float32(n_modes)
-        v1 = c1 / Float32(n_modes)
+        v0 = c0 / Float32(2 * π)
+        v1 = c1 / Float32(2 * π)
 
         # 散乱する2粒子のモードを選択
         for m1 in 1:n_modes, s1 in 1:3
@@ -233,9 +233,13 @@ function _scattering_kernel!(
         # 使わなかった残りのスロットは行列要素を 0 にして無効化する
         while transition_idx <= size(matrix_elements, 1)
             matrix_elements[transition_idx, w] = 0.0f0
+            for ss in 1:3, m in 1:n_modes
+                proposed_states[m, ss, transition_idx, w] = states[m, ss, w]
+            end
             transition_idx += 1
         end
     end
+    
     return nothing
 end
 

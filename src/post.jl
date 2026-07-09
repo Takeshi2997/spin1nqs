@@ -14,24 +14,17 @@ include("hilbert.jl")
 include("model.jl")
 include("sampler.jl")
 include("physics.jl")
-include("optimise.jl")
 
 using .Hilbert
 using .Model
 using .Sampler
 using .Physics
-using .Optimise
 
 function main()
-    dirname = "./data/" * Dates.format(now(), "yyyymmdd")
-    filename  = dirname * "/data.txt"
+    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimate"
     mkpath(dirname)
     if isfile(filename)
         rm(filename)
-    end
-    touch(filename)
-    open(filename, "a") do io
-        @printf(io, "Epoch, Re<E>, Im<E>, <n1>, <n2>, <n3>,\n")
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
@@ -51,24 +44,13 @@ function main()
     target_Mz = sys_config["target_Mz"]
 
     # 学習設定の読み込み
-    train_config = config["training"]
-    n_walkers = train_config["n_walkers"]
-    n_thermal = train_config["n_thermal"]
-    n_steps = train_config["n_steps"]
-    n_interval = train_config["n_interval"]
-    n_epochs = train_config["n_epochs"]
-    learning_rate = Float32(train_config["learning_rate"])
-    epsilon = Float32(train_config["epsilon"])
-    epsilon2 = Float32(train_config["epsilon2"])
+    estimate_config = config["estimate"]
+    n_walkers = estimate_config["n_walkers"]
+    n_thermal = estimate_config["n_thermal"]
 
     # モデル設定の読み込み
     model_config = config["model"]
     hidden_dim = model_config["hidden_dim"]
-
-    # IO設定の読み込み
-    io_config = config["io"]
-    log_iter = io_config["log_iter"]
-    save_iter = io_config["save_iter"]
 
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
@@ -92,8 +74,7 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260708/nqs_model_770_epoch1000.jld2")
+    ps_cpu, st_cpu = load_nqs_model("./data/20260709/nqs_model_770_epoch20000.jld2")
     
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
@@ -110,80 +91,33 @@ function main()
     end
     println("熱平衡化が完了しました。")
 
-    # === 4. メイン学習ループ ===
-    for epoch in 1:n_epochs
-        # このEpochでの観測量を蓄積するコンテナ
-        E_loc_all = ComplexF32[]
-        n1_all = Float32[]
-        n2_all = Float32[]
-        n3_all = Float32[]
-        
-        # A. サンプリングとデータ収集
-        for step in 1:n_steps
-            for _ in 1:n_interval
-                # マルコフ連鎖を1ステップ進める
-                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
-            end
-            
-            # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
-            inputs = basis.states
-            outputs = eval_complex_network(nqs_model, inputs, ps, st)
+    # === 4. 推定 ===
+    # サンプリングとデータ収集
+    # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
+    inputs = basis.states
+    outputs = eval_complex_network(nqs_model, inputs, ps, st)
 
-            # 局所エネルギー E_loc の計算
-            E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+    # 局所エネルギー E_loc の計算
+    E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
 
-            E_mean = sum(E_loc) / n_walkers
-            push!(E_loc_all, E_mean)
+    # エネルギー期待値・粒子数期待値の算出
+    E_mean = sum(E_loc) / n_walkers
+    E_real = real(E_mean)
+    E_imag = imag(E_mean)
+    n1_mean = sum(basis.states[:, 1, :]) / n_walkers
+    n2_mean = sum(basis.states[:, 2, :]) / n_walkers
+    n3_mean = sum(basis.states[:, 3, :]) / n_walkers
+    @printf("E_real, E_imag, n1_mean, n2_mean, n3_mean, \n")
+    @printf("%10.5f, %10.5f, %6.3f, %6.3f, %6.3f,\n", E_real, E_imag, n1_mean, n2_mean, n3_mean)
 
-            n1_mean = sum(basis.states[:, 1, :]) / n_walkers
-            n2_mean = sum(basis.states[:, 2, :]) / n_walkers
-            n3_mean = sum(basis.states[:, 3, :]) / n_walkers
-            n1_all = push!(n1_all, n1_mean)
-            n2_all = push!(n2_all, n2_mean)
-            n3_all = push!(n3_all, n3_mean)
-        end
-        
-        # B. エネルギー期待値・粒子数期待値の算出
-        E_mean = sum(E_loc_all) / n_steps
-        E_real = real(E_mean)
-        E_imag = imag(E_mean)
-        n1_mean = sum(n1_all) / n_steps
-        n2_mean = sum(n2_all) / n_steps
-        n3_mean = sum(n3_all) / n_steps
-        
-        # C. パラメータ更新のための勾配計算と更新
-        inputs = Float32.(basis.states)
-        outputs = eval_complex_network(nqs_model, inputs, ps, st)
-        E_loc_latest = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest, epsilon, epsilon2)
+    # 相関関数の評価
+    eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname)
 
-        # 相関関数の評価は ps 更新「前」に行う。
-        # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、
-        #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
-        #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
-        if epoch % save_iter == 0
-            eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
-        end
-
-        ps .= ps .- learning_rate .* delta_p
-
-        # D. 進捗の表示
-        if epoch % log_iter == 0 || epoch == 1
-            @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f\n", epoch, E_real, E_imag, n1_mean, n2_mean, n3_mean)
-            open(filename, "a") do io
-                @printf(io, "%4d, %10.5f, %10.5f, %6.3f, %6.3f, %6.3f,\n", epoch, E_real, E_imag, n1_mean, n2_mean, n3_mean)
-            end
-        end
-        if epoch % save_iter == 0
-            save_nqs_model(dirname, epoch, ps, st)
-        end
-    end
-    
-    println("=== 学習が正常に終了しました ===")
+    println("=== 計算が終了しました ===")
 end
 
-function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
-    filename  = dirname * "/space_correlation_epoch$(epoch).txt"
+function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname)
+    filename  = dirname * "/space_correlation.txt"
     if isfile(filename)
         rm(filename)
     end
@@ -197,7 +131,9 @@ function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_
     n1_diag = Float32(Ns_diag[1])
     n2_diag = Float32(Ns_diag[2])
     n3_diag = Float32(Ns_diag[3])
-
+    @printf("n1_diag, n2_diag, n3_diag, \n") 
+    @printf("%6.3f, %6.3f, %6.3f,\n", n1_diag, n2_diag, n3_diag)
+   
     # 新しい compute_local_correlation の戻り値は [n_modes(=q平面), 3, n_walkers]。
     # ウォーカー方向 (dims=3) で平均する (旧レイアウト [n_walkers, n_modes, 3] では dims=1 だった)
     rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
@@ -229,11 +165,8 @@ function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_
             @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f,\n", x_grid[x], cor1_x, cor2_x, cor3_x)
         end
     end
-    
-    @printf("n1_diag, n2_diag, n3_diag, max_correlation\n") 
-    @printf("%6.3f, %6.3f, %6.3f, %6.3, \n", n1_diag, n2_diag, n3_diag, max(abs.(cor1_x_vec - cor3_x_vec)))
 
-    return nothing 
+    return nothing
 end
 
 # 実行

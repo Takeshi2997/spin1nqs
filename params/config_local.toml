@@ -7,7 +7,7 @@ c1 = 0.2
 target_Mz = 0
 
 [training]
-n_walkers = 1000
+n_walkers = 200
 n_thermal = 500
 n_steps = 100
 n_interval = 4
@@ -16,9 +16,13 @@ learning_rate = 0.01
 epsilon = 0.01
 epsilon2 = 1
 
+[estimate]
+n_walkers = 20000
+n_thermal = 500
+
 [model]
 hidden_dim = 64
 
 [io]
 log_iter = 10
-save_iter = 100
+save_iter = 1000
