@@ -156,7 +156,7 @@ function _scattering_kernel!(
                 factor_annihilate = Float32(n1) * Float32(m1 == m2 && s1 == s2 ? n2 - 1 : n2)
  
                 # 運動量移動 q のループ
-                for q in -k_max:k_max
+                for q in -2*k_max:2*k_max
                     # 散乱後の運動量
                     k1_new = k1 + q
                     k2_new = k2 - q

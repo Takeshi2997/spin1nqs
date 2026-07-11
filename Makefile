@@ -8,3 +8,9 @@ clean:
 test:
 	julia ./test/runtests.jl ./params/config_server.toml
 
+exact:
+	julia ./test/exact.jl
+
+compare:
+	julia ./test/ed_from_kernel.jl
+
