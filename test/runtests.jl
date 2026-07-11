@@ -10,20 +10,17 @@ using Printf
 using Dates
 
 # 自作モジュールの読み込み（同じディレクトリにあると仮定）
-include("hilbert.jl")
-include("model.jl")
-include("sampler.jl")
-include("physics.jl")
-include("optimise.jl")
+include("../src/hilbert.jl")
+include("../src/model.jl")
+include("../src/sampler.jl")
+include("../src/physics.jl")
+include("../src/optimise.jl")
 
 using .Hilbert
 using .Model
 using .Sampler
 using .Physics
 using .Optimise
-
-commit = try readchomp(`git rev-parse --short HEAD`) catch; "unknown" end
-@info "Git commit: $commit"
 
 function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd")
@@ -95,8 +92,46 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ps_cpu, st_cpu = load_nqs_model("./data/20260710_estimate/nqs_model_770_epoch20000.jld2")
+    ps_cpu, st_cpu = expand_params(ps_cpu, 1, k_max, nqs_model)
    
+    # 3モードのテスト配置 (例: 全粒子 l=0, sz=0)
+    model3 = build_momentum_nqs(1, hidden_dim=hidden_dim)
+    ps3, st3 = load_nqs_model("./data/20260710_estimate/nqs_model_770_epoch20000.jld2")
+    model11 = build_momentum_nqs(5, hidden_dim=hidden_dim)
+    ps11, st11 = expand_params(ps3, 1, 5, model11)
+
+    occ3 = zeros(Int32, 3, 3);  occ3[2, 2] = 6
+    occ11 = zeros(Int32, 11, 3); occ11[6, 2] = 6   # 同じ物理配置の11モード表現
+    
+    out3  = eval_complex_network(model3,  reshape(Float32.(occ3),  9,  1), ps3,  st3)
+    out11 = eval_complex_network(model11, reshape(Float32.(occ11), 33, 1), ps11, st11)
+    @assert isapprox(out3[1], out11[1]; atol=1e-5) "移植ミス: 列の対応がずれている"
+    
+    occ3 = zeros(Int32, 3, 3);  occ3[2, 1] = 3; occ3[2, 3] = 3
+    occ11 = zeros(Int32, 11, 3); occ11[6, 1] = 3; occ11[6, 3] = 3 # 同じ物理配置の11モード表現
+    
+    out3  = eval_complex_network(model3,  reshape(Float32.(occ3),  9,  1), ps3,  st3)
+    out11 = eval_complex_network(model11, reshape(Float32.(occ11), 33, 1), ps11, st11)
+    @assert isapprox(out3[1], out11[1]; atol=1e-5) "移植ミス: 列の対応がずれている"
+
+    occ3 = zeros(Int32, 3, 3);  occ3[2, 1] = 2; occ3[2, 2] = 2; occ3[2, 3] = 2
+    occ11 = zeros(Int32, 11, 3); occ11[6, 1] = 2; occ11[6, 2] = 2; occ11[6, 3] = 2 # 同じ物理配置の11モード表現
+    
+    out3  = eval_complex_network(model3,  reshape(Float32.(occ3),  9,  1), ps3,  st3)
+    out11 = eval_complex_network(model11, reshape(Float32.(occ11), 33, 1), ps11, st11)
+    @assert isapprox(out3[1], out11[1]; atol=1e-5) "移植ミス: 列の対応がずれている"
+
+    occ3 = zeros(Int32, 3, 3);  occ3[2, 1] = 1; occ3[2, 2] = 4; occ3[2, 3] = 1
+    occ11 = zeros(Int32, 11, 3); occ11[6, 1] = 1; occ11[6, 2] = 4; occ11[6, 3] = 1 # 同じ物理配置の11モード表現
+    
+    out3  = eval_complex_network(model3,  reshape(Float32.(occ3),  9,  1), ps3,  st3)
+    out11 = eval_complex_network(model11, reshape(Float32.(occ11), 33, 1), ps11, st11)
+    @assert isapprox(out3[1], out11[1]; atol=1e-5) "移植ミス: 列の対応がずれている"
+
+    exit()
+
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu

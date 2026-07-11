@@ -8,6 +8,8 @@ using Zygote
 using ComponentArrays
 using Printf
 using Dates
+using Statistics
+using StatsBase
 
 # 自作モジュールの読み込み（同じディレクトリにあると仮定）
 include("hilbert.jl")
@@ -23,9 +25,6 @@ using .Physics
 function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimate"
     mkpath(dirname)
-    if isfile(filename)
-        rm(filename)
-    end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
     config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
@@ -74,7 +73,9 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = load_nqs_model("./data/20260709/nqs_model_770_epoch20000.jld2")
+    filename = "./data/20260709/nqs_model_2306_epoch14000.jld2"
+    cp(filename, dirname)
+    ps_cpu, st_cpu = load_nqs_model(filename)
     
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
@@ -85,10 +86,14 @@ function main()
     buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), n_walkers)
 
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
+    acc_rate = 0f0
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for step in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        accepted = CUDA.zeros(Float32, basis.n_walkers)
+        sample_step!(sampler, basis, accepted, nqs_model, k_max, n_particles, ps, st)
+        acc_rate += sum(accepted) / basis.n_walkers
     end
+    println(acc_rate / n_thermal)
     println("熱平衡化が完了しました。")
 
     # === 4. 推定 ===
@@ -99,6 +104,40 @@ function main()
 
     # 局所エネルギー E_loc の計算
     E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+
+    E_loc_real = Array(real.(E_loc))
+    println("min = ", minimum(E_loc_real))
+    println("max = ", maximum(E_loc_real))
+    println("median = ", median(E_loc_real))
+    # 上位10個
+    println(sort(E_loc_real, rev=true)[1:10])
+
+    states_host = Array(basis.states)   # [n_modes, 3, n_walkers]
+    configs = [vec(states_host[:,:,w]) for w in 1:n_walkers]
+    n_unique = length(unique(configs))
+    println("ユニーク配置数: $n_unique / $n_walkers")
+    
+    # 最頻配置の占有率
+    cm = countmap(configs)
+    top = sort(collect(cm), by=x->-x[2])[1:5]
+    for (cfg, cnt) in top
+        println("  $cnt 匹 (", round(100*cnt/n_walkers, digits=1), "%)")
+    end
+
+    # 状態の詳細
+    configs = [copy(states_host[:,:,w]) for w in 1:n_walkers]
+    cm = countmap(configs)
+    for (cfg, cnt) in sort(collect(cm), by=x->-x[2])[1:6]
+        println("$(cnt) 匹 ($(round(100cnt/n_walkers,digits=1))%)")
+        for s in 1:3
+            occ = [cfg[m,s] for m in 1:11]
+            println("  sz=$(s-2): ", occ, "  (N_s = $(sum(occ)))")
+        end
+        # 全運動量とエネルギー的な特徴
+        P = sum(cfg[m,s]*(m-6) for m in 1:11, s in 1:3)
+        Ekin = sum(cfg[m,s]*(m-6)^2 for m in 1:11, s in 1:3)
+        println("  P = $P, E_kin = $Ekin")
+    end
 
     # エネルギー期待値・粒子数期待値の算出
     E_mean = sum(E_loc) / n_walkers

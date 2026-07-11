@@ -6,8 +6,9 @@ using JLD2
 using Functors
 using Random
 using NNlib 
+using ComponentArrays
 
-export build_momentum_nqs, save_nqs_model, load_nqs_model, initialize_model, eval_complex_network, eval_complex_network_real, eval_complex_network_imag
+export build_momentum_nqs, save_nqs_model, load_nqs_model, initialize_model, eval_complex_network, eval_complex_network_real, eval_complex_network_imag, expand_params
 
 """
 波数空間のスピン1ボゾン系向けNQSを構築する関数
@@ -90,6 +91,39 @@ end
 
 function eval_complex_network_imag(model, inputs, ps, st)
     return imag.(eval_complex_network(model, inputs, ps, st))
+end
+
+"""
+3モードで学習した ps_old (ComponentVector) の重みを、
+11モード用に新しく初期化した ps_new に移植する。
+- layer_2: Dense(入力→hidden)。列をオフセット付きでコピー、新規列はゼロ
+- layer_3: Dense(hidden→2)。そのままコピー
+"""
+function expand_params(ps_old::ComponentVector, k_max_old::Int, k_max_new::Int,
+                       model_new, rng = Random.default_rng())
+    n_old = 2*k_max_old + 1        # 3
+    n_new = 2*k_max_new + 1        # 11
+    offset = k_max_new - k_max_old # 4
+
+    # 通常どおり初期化 (構造を得るため)
+    ps_new, st_new = Lux.setup(rng, model_new)
+    ps_new = ComponentVector{Float32}(ps_new)
+
+    # --- layer_2: Dense(3*n → hidden) ---
+    W_old = ps_old.layer_2.weight          # [hidden, 3*n_old] の view
+    ps_new.layer_2.weight .= 0.0f0         # 新規列 (l=±2..±5) はゼロ
+    for s in 1:3, m in 1:n_old
+        col_old = (s - 1) * n_old + m
+        col_new = (s - 1) * n_new + m + offset
+        ps_new.layer_2.weight[:, col_new] .= W_old[:, col_old]
+    end
+    ps_new.layer_2.bias .= ps_old.layer_2.bias
+
+    # --- layer_3: Dense(hidden → 2) はそのまま ---
+    ps_new.layer_3.weight .= ps_old.layer_3.weight
+    ps_new.layer_3.bias   .= ps_old.layer_3.bias
+
+    return ps_new, st_new
 end
 
 end # module Model
