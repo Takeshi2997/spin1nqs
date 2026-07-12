@@ -13,8 +13,8 @@ n_steps = 100
 n_interval = 4
 n_epochs = 20000
 learning_rate = 0.01
-epsilon = 0.001
-epsilon2 = 1
+epsilon = 0.000001
+epsilon2 = 0.001
 
 [estimate]
 n_walkers = 5000

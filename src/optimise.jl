@@ -10,7 +10,7 @@ export compute_SR_update
 """
 SR法によるパラメータ更新ベクトルを計算する
 """
-function compute_SR_update(model, ps_flat, st, states, E_loc, epsilon=0.01f0, epsilon2=0.f0)
+function compute_SR_update(model, ps_flat, st, states, E_loc, epoch, epsilon=0.01f0, epsilon2=0.f0, decay=0.999f0, lambda_min=1f-4)
     n_walkers = size(states, ndims(states))
 
     # 1. ヤコビアン O_k(x) の計算のためのラッパー関数
@@ -51,7 +51,8 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epsilon=0.01f0, ep
     R = real.((transpose.(O) * E_centerd) ./ n_walkers)
 
     # 4. 正則化（対角成分を少し底上げして逆行列計算を安定化）
-    S_reg = S + epsilon * (epsilon2 * Diagonal(S) + I)
+    lambda = max(epsilon2 * decay^epoch, lambda_min) 
+    S_reg = S + epsilon * I + lambda * Diagonal(S)
 
     # 5. 連立方程式 S * Δp = R を解く
     delta_p = S_reg \ R
