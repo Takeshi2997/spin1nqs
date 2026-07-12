@@ -56,6 +56,7 @@ function main()
     # 学習設定の読み込み
     train_config = config["training"]
     n_walkers = train_config["n_walkers"]
+    println(n_walkers)
     n_thermal = train_config["n_thermal"]
     n_steps = train_config["n_steps"]
     n_interval = train_config["n_interval"]
@@ -103,7 +104,7 @@ function main()
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), n_walkers)
+    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1), n_walkers)
 
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
@@ -157,7 +158,7 @@ function main()
         inputs = Float32.(basis.states)
         outputs = eval_complex_network(nqs_model, inputs, ps, st)
         E_loc_latest = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest, epsilon, epsilon2)
+        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc_latest, epoch, epsilon, epsilon2)
 
         # 相関関数の評価は ps 更新「前」に行う。
         # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、

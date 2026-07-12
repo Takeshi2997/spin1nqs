@@ -6,13 +6,13 @@ using Printf
 # ============================================================
 # パラメータ
 # ============================================================
-const K_MAX      = 1        # モード数 = 2*K_MAX + 1
+const K_MAX      = 5        # モード数 = 2*K_MAX + 1
 const N_PART     = 6        # 粒子数
 const G0         = 0.0      # c0 (spin-independent)
 const G1         = 0.2      # c1 (spin interaction)
 const HBAR2_2M   = 1.0
 const TARGET_SZ  = 0
-const CONSTRAIN_P = false   # true: P=0 に制限, false: 全 P
+const CONSTRAIN_P = true   # true: P=0 に制限, false: 全 P
 const HALF_FACTOR = true    # true: 全チャネルに 1/2 (physics.jl と同じ)
 
 const N_MODES = 2 * K_MAX + 1
@@ -181,7 +181,7 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
 
         # 相互作用
         for l1 in 1:N_MODES, l2 in 1:N_MODES
-            for q in -K_MAX:K_MAX
+            for q in -2*K_MAX:2*K_MAX
                 l1n = l1 + q
                 l2n = l2 - q
                 (1 <= l1n <= N_MODES && 1 <= l2n <= N_MODES) || continue
