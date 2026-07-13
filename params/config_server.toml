@@ -9,19 +9,19 @@ target_Mz = 0
 [training]
 n_walkers = 200
 n_thermal = 500
-n_steps = 100
+n_steps = 50
 n_interval = 4
-n_epochs = 20000
+n_epochs = 30000
 learning_rate = 0.01
 epsilon = 0.000001
-epsilon2 = 0.001
+epsilon2 = 0.01
 
 [estimate]
 n_walkers = 5000
 n_thermal = 500
 
 [model]
-hidden_dim = 64
+hidden_dim = 256
 
 [io]
 log_iter = 10
