@@ -76,6 +76,8 @@ function compute_local_energy(
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
     # matrix_elements: [max_transitions, n_walkers]
+    proposed_states .= reshape(states, params.n_modes, 3, 1, :)   # 全スロットに現状態を複製
+    matrix_elements .= 0f0                                         # 全スロットを無効値で初期化
     blocks = ceil(Int, n_walkers / threads)
     @cuda threads=threads blocks=blocks _scattering_kernel!(
         states, 
@@ -93,7 +95,7 @@ function compute_local_energy(
     ##     params.c0,
     ##     params.c1
     ## )
-    
+
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
     flat_proposed = reshape(proposed_states, params.n_modes, 3, :)
@@ -128,7 +130,7 @@ function _scattering_kernel!(
 )
     n_modes = 2 * k_max + 1
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
-
+    
     if w <= size(states, 3)
         transition_idx = 1
         
@@ -218,7 +220,7 @@ function _scattering_kernel!(
                             
                             # 状態をコピーして更新
                             _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            
+
                             # スピン交換用のボース統計因子を計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
                             matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
@@ -230,14 +232,14 @@ function _scattering_kernel!(
             end
         end
 
-        # 使わなかった残りのスロットは行列要素を 0 にして無効化する
-        while transition_idx <= size(matrix_elements, 1)
-            matrix_elements[transition_idx, w] = 0.0f0
-            for ss in 1:3, m in 1:n_modes
-                proposed_states[m, ss, transition_idx, w] = states[m, ss, w]
-            end
-            transition_idx += 1
-        end
+        ## # 使わなかった残りのスロットは行列要素を 0 にして無効化する
+        ## while transition_idx <= size(matrix_elements, 1)
+        ##     matrix_elements[transition_idx, w] = 0.0f0
+        ##     for ss in 1:3, m in 1:n_modes
+        ##         proposed_states[m, ss, transition_idx, w] = states[m, ss, w]
+        ##     end
+        ##     transition_idx += 1
+        ## end
     end
     
     return nothing
@@ -253,10 +255,10 @@ function _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, 
             proposed_states[m, s, id, w] = states[m, s, w]
         end
     end
-    proposed_states[m1, s1, id, w] -= 1
-    proposed_states[m2, s2, id, w] -= 1
-    proposed_states[m1_new, s1_new, id, w] += 1
-    proposed_states[m2_new, s2_new, id, w] += 1
+    proposed_states[m1, s1, id, w] -= Int32(1)
+    proposed_states[m2, s2, id, w] -= Int32(1)
+    proposed_states[m1_new, s1_new, id, w] += Int32(1)
+    proposed_states[m2_new, s2_new, id, w] += Int32(1)
 end
 
 """

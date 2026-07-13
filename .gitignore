@@ -2,3 +2,5 @@ data/
 data_server/
 *.jld2
 *.txt
+*.json
+*.out
