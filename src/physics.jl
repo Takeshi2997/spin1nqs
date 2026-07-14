@@ -72,7 +72,6 @@ function compute_local_energy(
     E_loc = _compute_kinetic(states, params) 
     
     # 2. 相互作用エネルギーの計算（遷移テンソルの構築とNN評価）
-    
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
     # matrix_elements: [max_transitions, n_walkers]

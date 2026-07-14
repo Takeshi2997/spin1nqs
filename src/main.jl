@@ -9,7 +9,11 @@ using ComponentArrays
 using Printf
 using Dates
 
-# 自作モジュールの読み込み（同じディレクトリにあると仮定）
+function report(label)
+    CUDA.synchronize()   # 非同期実行の完了を待つ (重要)
+    @printf("%-30s %.3f GiB\n", label, CUDA.used_memory() / 2^30)
+end
+
 include("hilbert.jl")
 include("model.jl")
 include("sampler.jl")
@@ -55,6 +59,7 @@ function main()
 
     # 学習設定の読み込み
     train_config = config["training"]
+    chunk = train_config["chunk"]
     n_walkers = train_config["n_walkers"]
     println(n_walkers)
     n_thermal = train_config["n_thermal"]
@@ -64,6 +69,7 @@ function main()
     learning_rate = Float32(train_config["learning_rate"])
     epsilon = Float32(train_config["epsilon"])
     epsilon2 = Float32(train_config["epsilon2"])
+    n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
     model_config = config["model"]
@@ -98,14 +104,15 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     ## ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch17000.jld2")
-   
+    n_params = Lux.parameterlength(ps_cpu)
+
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1), n_walkers * n_steps)
+    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1), chunk)
 
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
@@ -118,7 +125,6 @@ function main()
     for epoch in 1:n_epochs
         # このEpochでの観測量を蓄積するコンテナ
         all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
-        n_samples = 0
 
         ## prof = CUDA.@profile begin
         # A. サンプリングとデータ収集
@@ -129,39 +135,60 @@ function main()
             end
             
             all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
-            n_samples += n_walkers
         end
-       
-        # B. エネルギー期待値・粒子数期待値の算出
-        # E_loc :: CuArray{ComplexF32, 1} (長さ n_walkers)
-        inputs = Float32.(all_states)
-        outputs = eval_complex_network(nqs_model, inputs, ps, st)
-        E_loc = compute_local_energy(all_states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
 
-        E_mean = ComplexF64(sum(E_loc)) / n_samples
-        E_real = real(E_mean)
-        E_imag = imag(E_mean)
-        E2_sum = Float64(sum(abs2.(E_loc)))
-        E_var  = E2_sum / n_samples - abs2(E_mean)       # Var(E_loc) = ⟨|E|²⟩ − |⟨E⟩|²
-        n1_mean = sum(all_states[:, 1, :]) / n_samples
-        n2_mean = sum(all_states[:, 2, :]) / n_samples
-        n3_mean = sum(all_states[:, 3, :]) / n_samples
+        # B. エネルギー期待値・粒子数期待値の算出
+        E_sum   = 0.0 + 0.0im
+        E2_sum  = 0.0
+        O_sum   = CUDA.zeros(ComplexF32, n_params)           # Σ_x O_k(x)
+        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params) # Σ_x O_k*(x) O_l(x)
+        OE_sum  = CUDA.zeros(ComplexF32, n_params)           # Σ_x O_k*(x) E_loc(x)
+        for c in Iterators.partition(1:n_total, chunk)
+            inputs_c = all_states[:, :, c]                    # このチャンクだけGPUで処理
+            outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
+            E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+            O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
+        
+            E_sum  += sum(E_loc_c)
+            E2_sum += sum(abs2.(E_loc_c))
+            O_sum .+= dropdims(sum(O_c, dims=2), dims=2)
+            OE_sum .+= O_c * E_loc_c
+            OO_sum .+= conj.(O_c) * transpose(O_c)
+        end
+        E_mean = E_sum / n_total
+        E2_mean = E2_sum / n_total
+        O_mean = O_sum ./ n_total
+        OO_mean = OO_sum ./ n_total
+        OE_mean = OE_sum ./ n_total
+
+        ## inputs = Float32.(all_states)
+        ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
+        ## E_loc = compute_local_energy(all_states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+        ## E_mean = ComplexF64(sum(E_loc)) / n_samples
+        ## E2_sum = Float64(sum(abs2.(E_loc)))
+        E_real = real(ComplexF32(E_mean))
+        E_imag = imag(ComplexF32(E_mean))
+        E_var  = Float32(E2_mean - abs2(E_mean))
+
+        n1_mean = sum(all_states[:, 1, :]) / n_total
+        n2_mean = sum(all_states[:, 2, :]) / n_total
+        n3_mean = sum(all_states[:, 3, :]) / n_total
         # l≠0 モードの総占有 = N - (l=0 の占有)。states[k_max+1, :, :] が l=0 の全スピン
-        n_off = Float64(n_particles) - Float64(sum(all_states[k_max + 1, :, :])) / n_samples
+        n_off = Float64(n_particles) - Float64(sum(all_states[k_max + 1, :, :])) / n_total
 
         # 相関関数の評価は ps 更新「前」に行う。
         # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、
         #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         if epoch % save_iter == 0
-            eval_space_correlation(all_states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+            eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
         end
 
         # C. 進捗の表示
-        if epoch % log_iter == 0 || epoch == 17001
+        if epoch % log_iter == 0 || epoch == 1
             @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
-                @printf(io, "%4d, %10.5f, %10.5f, %10.5f, %6.5f, %6.5f, %6.5f, %6.5f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
+                @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             end
         end
         if epoch % save_iter == 0
@@ -169,7 +196,8 @@ function main()
         end
         
         # D. パラメータ更新のための勾配計算と更新
-        delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
+        ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
+        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2)
 
         gnorm = sqrt(sum(abs2, delta_p))
         if gnorm > 1.0f0
