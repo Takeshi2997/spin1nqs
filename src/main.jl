@@ -102,8 +102,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch17000.jld2")
+    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ## e_start = 1
+    ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch3000.jld2")
+    e_start = 3001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -122,7 +124,7 @@ function main()
     println("熱平衡化が完了しました。")
 
     # === 4. メイン学習ループ ===
-    for epoch in 1:n_epochs
+    for epoch in e_start:n_epochs
         # このEpochでの観測量を蓄積するコンテナ
         all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
 
@@ -164,6 +166,7 @@ function main()
         ## inputs = Float32.(all_states)
         ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
         ## E_loc = compute_local_energy(all_states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+        ## compare_SR(nqs_model, ps, st, all_states, E_loc, O_mean, OO_mean, OE_mean, E_mean)
         ## E_mean = ComplexF64(sum(E_loc)) / n_samples
         ## E2_sum = Float64(sum(abs2.(E_loc)))
         E_real = real(ComplexF32(E_mean))
@@ -181,14 +184,16 @@ function main()
         #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         if epoch % save_iter == 0
-            eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+            inputs = Float32.(all_states)
+            outputs = eval_complex_network(nqs_model, inputs, ps, st)
+            eval_space_correlation(all_states, outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
         end
 
         # C. 進捗の表示
-        if epoch % log_iter == 0 || epoch == 1
+        if epoch % log_iter == 0 || epoch == e_start
             @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
-                @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
+                @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             end
         end
         if epoch % save_iter == 0
@@ -260,7 +265,7 @@ function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_
         end
     end
     
-    @printf("n1_diag, n2_diag, n3_diag, max_correlation\n") 
+    @printf("n1_diag, n2_diag, n3_diag, max_correlation,\n") 
     @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n1_diag, n2_diag, n3_diag, maximum(abs.(cor1_x_vec - cor3_x_vec)))
 
     return nothing 

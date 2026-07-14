@@ -7,23 +7,23 @@ c1 = 0.2
 target_Mz = 0
 
 [training]
-chunk = 512
-n_walkers = 32
+chunk = 128
+n_walkers = 16
 n_thermal = 512
-n_steps = 256
+n_steps = 64
 n_interval = 8
 n_epochs = 20000
 learning_rate = 0.01
-epsilon = 0.000001
-epsilon2 = 0.001
+epsilon = 0.01
+epsilon2 = 0.0001
 
 [estimate]
 n_walkers = 5000
 n_thermal = 500
 
 [model]
-hidden_dim = 64
+hidden_dim = 128
 
 [io]
 log_iter = 10
-save_iter = 100
+save_iter = 1000
