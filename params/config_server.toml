@@ -15,14 +15,14 @@ n_interval = 8
 n_epochs = 20000
 learning_rate = 0.01
 epsilon = 0.01
-epsilon2 = 0.0001
+epsilon2 = 0.01
 
 [estimate]
 n_walkers = 5000
 n_thermal = 500
 
 [model]
-hidden_dim = 128
+hidden_dim = 64
 
 [io]
 log_iter = 10

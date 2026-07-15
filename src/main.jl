@@ -102,10 +102,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## e_start = 1
-    ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch3000.jld2")
-    e_start = 3001
+    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    e_start = 1
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch5000.jld2")
+    ## e_start = 5001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -191,7 +191,7 @@ function main()
 
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
-            @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
+            @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
                 @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             end

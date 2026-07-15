@@ -36,7 +36,7 @@ using ComponentArrays
 include("../src/model.jl")
 include("../src/hilbert.jl")
 include("../src/physics.jl")
-include("../src/ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
+include("./ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
 # --------------------------------------------------------------------
 
 using CUDA

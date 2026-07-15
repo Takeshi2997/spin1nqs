@@ -42,7 +42,7 @@ end
 """
 SR法
 """
-function SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay=0.999f0, lambda_min=1f-6)
+function SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay=0.998f0, lambda_min=1f-6)
     # S行列とRベクトルの構築
     S = real.(OO_mean .- conj.(O_mean) * transpose(O_mean))          # S_kl
     R = real.(OE_mean .- O_mean .* E_mean)

@@ -12,10 +12,10 @@ using Statistics
 using StatsBase
 
 # 自作モジュールの読み込み（同じディレクトリにあると仮定）
-include("hilbert.jl")
-include("model.jl")
-include("sampler.jl")
-include("physics.jl")
+include("../src/hilbert.jl")
+include("../src/model.jl")
+include("../src/sampler.jl")
+include("../src/physics.jl")
 
 using .Hilbert
 using .Model
