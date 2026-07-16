@@ -8,21 +8,23 @@ target_Mz = 0
 
 [training]
 chunk = 512
-n_walkers = 32
+n_walkers = 256
 n_thermal = 512
 n_steps = 64
-n_interval = 8
+n_interval = 4
 n_epochs = 20000
 learning_rate = 0.01
 epsilon = 0.01
-epsilon2 = 0.01
+epsilon2 = 0.0001
+decay = 0.996
+lambda_min = 0.000001
 
 [estimate]
 n_walkers = 5000
 n_thermal = 500
 
 [model]
-hidden_dim = 64
+hidden_dim = 32
 
 [io]
 log_iter = 10

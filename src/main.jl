@@ -8,9 +8,11 @@ using Zygote
 using ComponentArrays
 using Printf
 using Dates
+using Timers
 
 function report(label)
     CUDA.synchronize()   # 非同期実行の完了を待つ (重要)
+    toc()
     @printf("%-30s %.3f GiB\n", label, CUDA.used_memory() / 2^30)
 end
 
@@ -61,7 +63,6 @@ function main()
     train_config = config["training"]
     chunk = train_config["chunk"]
     n_walkers = train_config["n_walkers"]
-    println(n_walkers)
     n_thermal = train_config["n_thermal"]
     n_steps = train_config["n_steps"]
     n_interval = train_config["n_interval"]
@@ -69,6 +70,8 @@ function main()
     learning_rate = Float32(train_config["learning_rate"])
     epsilon = Float32(train_config["epsilon"])
     epsilon2 = Float32(train_config["epsilon2"])
+    decay = Float32(train_config["decay"])
+    lambda_min = Float32(train_config["lambda_min"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -104,8 +107,8 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260713_estimated/nqs_model_4610_epoch5000.jld2")
-    ## e_start = 5001
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260715_estimated/nqs_model_6466_epoch2000.jld2")
+    ## e_start = 2001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -202,7 +205,7 @@ function main()
         
         # D. パラメータ更新のための勾配計算と更新
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
-        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2)
+        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
 
         gnorm = sqrt(sum(abs2, delta_p))
         if gnorm > 1.0f0
