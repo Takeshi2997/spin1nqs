@@ -5,7 +5,9 @@ using Lux
 using Zygote
 using LinearAlgebra
 
-export compute_SR_update, compute_jacobian, SR_update, compare_SR
+export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar
+
+include("jacobian.jl")
 
 """
 ヤコビアン計算

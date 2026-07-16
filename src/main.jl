@@ -8,12 +8,22 @@ using Zygote
 using ComponentArrays
 using Printf
 using Dates
-using Timers
+using Dates
+
+const start_ref = Ref{UInt64}(time_ns())
+function reset_start!()
+    start_ref[] = time_ns()
+end
+function get_elapsed()
+    return (time_ns() - start_ref[]) / 1e6
+end
+reset_start!()
 
 function report(label)
     CUDA.synchronize()   # 非同期実行の完了を待つ (重要)
-    toc()
-    @printf("%-30s %.3f GiB\n", label, CUDA.used_memory() / 2^30)
+    time = get_elapsed()
+    @printf("%-30s %.3f GiB, Elapsed time %5.3f ms\n", label, CUDA.used_memory() / 2^30, time)
+    reset_start!()
 end
 
 include("hilbert.jl")
@@ -126,11 +136,12 @@ function main()
     end
     println("熱平衡化が完了しました。")
 
+    ## report("Initialize")
     # === 4. メイン学習ループ ===
+    all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
     for epoch in e_start:n_epochs
+        ## println("########## Epoch Start! ##########")
         # このEpochでの観測量を蓄積するコンテナ
-        all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
-
         ## prof = CUDA.@profile begin
         # A. サンプリングとデータ収集
         for step in 1:n_steps
@@ -141,6 +152,7 @@ function main()
             
             all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
         end
+        ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
         E_sum   = 0.0 + 0.0im
@@ -151,9 +163,14 @@ function main()
         for c in Iterators.partition(1:n_total, chunk)
             inputs_c = all_states[:, :, c]                    # このチャンクだけGPUで処理
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
+            ## report("Evaluate network")
             E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-            O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
-        
+            ## report("Compute local Energy")
+            ## O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
+            inputs_tmp = Float32.(reshape(inputs_c, (2 * k_max + 1) * 3, :))
+            O_c, _ = compute_O_bar(inputs_tmp, ps)
+            ## report("Compute jacobian")
+
             E_sum  += sum(E_loc_c)
             E2_sum += sum(abs2.(E_loc_c))
             O_sum .+= dropdims(sum(O_c, dims=2), dims=2)
@@ -195,6 +212,7 @@ function main()
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
             @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
+            report("Epoch " * string(epoch))
             open(filename, "a") do io
                 @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             end
@@ -203,9 +221,12 @@ function main()
             save_nqs_model(dirname, epoch, ps, st)
         end
         
+        ## report("Compute Average")
         # D. パラメータ更新のための勾配計算と更新
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
         delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
+        ## report("SR")
+            
 
         gnorm = sqrt(sum(abs2, delta_p))
         if gnorm > 1.0f0
@@ -213,6 +234,7 @@ function main()
         end
         ps .= ps .- learning_rate .* delta_p
  
+        ## report("End")
         ## end
         ## display(prof)
     end
