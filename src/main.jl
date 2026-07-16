@@ -8,7 +8,6 @@ using Zygote
 using ComponentArrays
 using Printf
 using Dates
-using Dates
 
 const start_ref = Ref{UInt64}(time_ns())
 function reset_start!()
@@ -38,9 +37,6 @@ using .Sampler
 using .Physics
 using .Optimise
 
-commit = try readchomp(`git rev-parse --short HEAD`) catch; "unknown" end
-@info "Git commit: $commit"
-
 function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd")
     filename  = dirname * "/data.txt"
@@ -49,8 +45,10 @@ function main()
         rm(filename)
     end
     touch(filename)
+    commit = try readchomp(`git rev-parse --short HEAD`) catch; "unknown" end
     open(filename, "a") do io
-        @printf(io, "Epoch, Re<E>, Im<E>, VarE, <n1>, <n2>, <n3>, n_off,\n")
+        @printf(io, "[%s] ==== 学習開始 （Git commit:%s）====\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), commit)
+        @printf(io, "Epoch, UnixTime, Re<E>, Im<E>, VarE, <n1>, <n2>, <n3>, n_off,\n")
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
@@ -204,17 +202,16 @@ function main()
         #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         if epoch % save_iter == 0
-            inputs = Float32.(all_states)
+            inputs = Float32.(all_states[:, :, 1:chunk])
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
-            eval_space_correlation(all_states, outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
+            eval_space_correlation(all_states[:, :, 1:chunk], outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
         end
 
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
-            @printf("Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
-            report("Epoch " * string(epoch))
+            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
-                @printf(io, "%4d, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
+                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, time(), E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
             end
         end
         if epoch % save_iter == 0
