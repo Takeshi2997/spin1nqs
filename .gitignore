@@ -1,5 +1,6 @@
 data/
 data_server/
+scp_data/
 *.jld2
 *.txt
 *.json
