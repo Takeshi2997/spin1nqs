@@ -113,10 +113,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## e_start = 1
-    ps_cpu, st_cpu = load_nqs_model("./data/20260717_estimated/nqs_model_4610_epoch6000.jld2")
-    e_start = 6001
+    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    e_start = 1
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260717_estimated/nqs_model_4610_epoch6000.jld2")
+    ## e_start = 6001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -138,7 +138,6 @@ function main()
     # === 4. メイン学習ループ ===
     all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
     n_clipping = 0
-    n_clipping_epoch = 0
     for epoch in e_start:n_epochs
         ## println("########## Epoch Start! ##########")
         ## prof = CUDA.@profile begin
@@ -210,13 +209,11 @@ function main()
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
-            n_clipping_epoch += log_iter
-            clipping_ratio = n_clipping / n_clipping_epoch
             @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %6.3f,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
-            epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, clipping_ratio)
+            epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             open(filename, "a") do io
                 @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.3f,\n", 
-                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, clipping_ratio)
+                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             end
         end
         if epoch % save_iter == 0
@@ -224,7 +221,6 @@ function main()
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
             eval_space_correlation(all_states[:, :, 1:chunk], outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
-            n_clipping = 0
         end
 
         ## report("Compute Average")

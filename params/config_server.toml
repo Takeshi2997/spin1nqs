@@ -11,13 +11,13 @@ chunk = 2048
 n_walkers = 256
 n_thermal = 512
 n_steps = 64
-n_interval = 128
+n_interval = 32
 n_epochs = 50000
 learning_rate = 0.01
 epsilon = 0.1
 epsilon2 = 0.01
-decay = 0.9999
-lambda_min = 0.001
+decay = 0.999
+lambda_min = 0.0005
 
 [estimate]
 n_walkers = 2048
