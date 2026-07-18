@@ -23,9 +23,11 @@ using .Sampler
 using .Physics
 
 function main()
-    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimate"
-    mkpath(dirname)
- 
+    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimate/"
+    if !isdir(dirname)
+        mkpath(dirname)
+    end
+
     # === 1. 物理・シミュレーションパラメータの設定 ===
     config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
     println("🔧 Loading configuration from: ", config_path)
@@ -73,9 +75,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    filename = "./data/20260709/nqs_model_2306_epoch14000.jld2"
-    cp(filename, dirname)
-    ps_cpu, st_cpu = load_nqs_model(filename)
+    srcdir = "./data/20260718/"
+    filename = "nqs_model_4610_epoch10010.jld2"
+    cp(srcdir * filename, dirname * filename, force=true)
+    ps_cpu, st_cpu = load_nqs_model(dirname * filename)
     
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
@@ -102,6 +105,9 @@ function main()
     inputs = basis.states
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
 
+    S2_loc = compute_local_S2(basis.states, outputs, n_particles, k_max, basis.threads, nqs_model, ps, st)
+    @printf("  <S²> = %.4f + i(%.4f)\n", real(sum(S2_loc)) / n_walkers, imag(sum(S2_loc)) / n_walkers)
+ 
     # 局所エネルギー E_loc の計算
     E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
 
@@ -156,7 +162,7 @@ function main()
 end
 
 function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname)
-    filename  = dirname * "/space_correlation.txt"
+    filename  = dirname * "space_correlation.txt"
     if isfile(filename)
         rm(filename)
     end

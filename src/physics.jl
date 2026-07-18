@@ -5,7 +5,7 @@ using Lux
 using ..Model
 # using ..Hilbert # 必要に応じて
 
-export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_density_matrix
+export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix
 
 """
 系の物理パラメータをまとめる構造体
@@ -392,6 +392,125 @@ function _correlation_kernel!(
     return nothing
 end
 
+# ============================================================
+# ホスト関数
+# ============================================================
+"""
+    compute_local_S2(states, log_psi_current, n_particles, k_max, threads, model, ps, st)
+        -> S2_loc :: CuVector{ComplexF32} [n_walkers]
+
+⟨S²⟩ = mean(real.(S2_loc))。厳密基底状態なら 0。
+Im の平均 ≈ 0 が健全性チェック (S² はエルミートなので)。
+"""
+function compute_local_S2(
+    states::CuArray{Int32, 3},
+    log_psi_current::CuArray{ComplexF32, 1},
+    n_particles::Int,
+    k_max::Int,
+    threads::Int,
+    model, ps, st,
+)
+    n_walkers = size(states, 3)
+    n_modes = 2 * k_max + 1
+    # 非対角スロット上限: 順序付き占有セル対 ≤ min(N,3L)²、チャネル ≤ 2/対
+    max_t = 2 * min(n_particles, 3 * n_modes)^2
+
+    proposed_states = CUDA.zeros(Int32, n_modes, 3, max_t, n_walkers)
+    matrix_elements = CUDA.zeros(Float32, max_t, n_walkers)
+    diag_part       = CUDA.zeros(Float32, n_walkers)
+
+    blocks = cld(n_walkers, threads)
+    @cuda threads=threads blocks=blocks _s2_kernel!(
+        states, proposed_states, matrix_elements, diag_part, n_modes, max_t)
+
+    # ψ 比 (相関計算と同じパターン)
+    flat_proposed = reshape(proposed_states, n_modes, 3, :)
+    flat_log_psi  = eval_complex_network(model, flat_proposed, ps, st)
+    log_psi_prop  = reshape(flat_log_psi, max_t, n_walkers)
+    psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
+
+    offdiag = dropdims(sum(matrix_elements .* psi_ratio, dims = 1), dims = 1)
+    
+    return ComplexF32.(diag_part) .+ offdiag
+end
+
+# ============================================================
+# カーネル: 非対角チャネルの列挙
+#   physics.jl の _update_proposed_states! / _calculate_bose_factor を再利用
+# ============================================================
+function _s2_kernel!(
+    states,             # [n_modes, 3, n_walkers]
+    proposed_states,    # [n_modes, 3, max_t, n_walkers]
+    matrix_elements,    # [max_t, n_walkers]
+    diag_part,          # [n_walkers]
+    n_modes::Int,
+    max_t::Int,
+)
+    w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if w <= size(states, 3)
+
+        # ---- 対角部分 (閉形式): 2N + Mz² − (N₊ + N₋) ----
+        N  = Int32(0); Mz = Int32(0); Q = Int32(0)
+        for s in 1:3, m in 1:n_modes
+            n = states[m, s, w]
+            N  += n
+            Mz += n * Int32(s - 2)
+            Q  += n * Int32((s - 2)^2)      # (±1)²=1, 0²=0 → N₊+N₋
+        end
+        diag_part[w] = Float32(2 * N + Mz * Mz - Q)
+
+        # ---- 非対角チャネル (運動量固定, スピンのみ変化) ----
+        t = 1
+        for m1 in 1:n_modes, s1 in 1:3
+            n1 = states[m1, s1, w]
+            n1 == 0 && continue
+            for m2 in 1:n_modes, s2 in 1:3
+                n2 = states[m2, s2, w]
+                n2 == 0 && continue
+                (m1 == m2 && s1 == s2 && n2 < 2) && continue
+
+                factor_annihilate = Float32(n1) *
+                    Float32((m1 == m2 && s1 == s2) ? n2 - 1 : n2)
+
+                # チャネル1: (0,0) → (−1,+1) と (+1,−1)   [係数 1]
+                if s1 == 2 && s2 == 2
+                    for (t1, t2) in ((1, 3), (3, 1))
+                        _update_proposed_states!(proposed_states, states, n_modes,
+                            m1, s1, m2, s2, m1, t1, m2, t2, t, w)
+                        matrix_elements[t, w] = _calculate_bose_factor(
+                            proposed_states, factor_annihilate, m1, t1, m2, t2, t, w)
+                        t += 1
+                    end
+                # チャネル2: (∓1,±1) → (0,0)   [係数 1]
+                elseif (s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)
+                    _update_proposed_states!(proposed_states, states, n_modes,
+                        m1, s1, m2, s2, m1, 2, m2, 2, t, w)
+                    matrix_elements[t, w] = _calculate_bose_factor(
+                        proposed_states, factor_annihilate, m1, 2, m2, 2, t, w)
+                    t += 1
+                # チャネル3: スピン交換 (0,±1) ↔ (±1,0)   [係数 1]
+                elseif abs(s1 - s2) == 1
+                    _update_proposed_states!(proposed_states, states, n_modes,
+                        m1, s1, m2, s2, m1, s2, m2, s1, t, w)
+                    matrix_elements[t, w] = _calculate_bose_factor(
+                        proposed_states, factor_annihilate, m1, s2, m2, s1, t, w)
+                    t += 1
+                end
+                # 密度型 (スピン不変) は対角に閉形式で計上済み。ここでは列挙しない。
+            end
+        end
+
+        ## # ---- パディング: ME=0, 提案状態は現在の状態 (ψ比=1 で安全) ----
+        ## while t <= max_t
+        ##     matrix_elements[t, w] = 0.0f0
+        ##     for ss in 1:3, m in 1:n_modes
+        ##         proposed_states[m, ss, t, w] = states[m, ss, w]
+        ##     end
+        ##     t += 1
+        ## end
+    end
+    return nothing
+end
 
 function compute_local_density_matrix(
     states::CuArray{Int32, 3}, 

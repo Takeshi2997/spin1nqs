@@ -37,7 +37,7 @@ include("../src/physics.jl")   # ★ _scattering_kernel! が定義されてい�
 # ============================================================
 # パラメータ (config と合わせる)
 # ============================================================
-const K_MAX  = 5        # まず k_max=1 (次元79) で検証してから大きくする
+const K_MAX  = 1        # まず k_max=1 (次元79) で検証してから大きくする
 const N_PART = 6
 const G0     = 0.0
 const G1     = 0.2
@@ -172,6 +172,88 @@ function build_H_from_kernel(basis::Vector{Vector{Int8}}; batch::Int = 4096)
     end
 
     return H + spdiagm(kin)
+end
+
+# ============================================================
+# 2.1. カーネル出力からS^2を構築
+# ============================================================
+"""
+セクターの全基底状態を「ウォーカー」として _scattering_kernel! に流し、
+出力 (proposed_states, matrix_elements) から疎行列 S^2 を組み立てる。
+"""
+function build_S2_from_kernel(basis::Vector{Vector{Int8}}; batch::Int = 4096)
+    dim = length(basis)
+
+    # 占有数ベクトル → 基底インデックスの辞書
+    index = Dict{Vector{Int8}, Int}()
+    sizehint!(index, dim)
+    for (i, occ) in enumerate(basis)
+        index[occ] = i
+    end
+
+    rows = Int[]; cols = Int[]; vals = Float64[]
+
+    max_t = 2 * min(N_PART, 3 * N_MODES)^2
+    n_chunks = cld(dim, batch)
+    for (ci, chunk) in enumerate(Iterators.partition(1:dim, batch))
+        nb = length(chunk)
+
+        # 基底状態をウォーカー配列に詰める [n_modes, 3, nb]
+        states_h = Array{Int32}(undef, N_MODES, 3, nb)
+        for (b, i) in enumerate(chunk)
+            states_h[:, :, b] .= reshape(Int32.(basis[i]), N_MODES, 3)
+        end
+        states   = CuArray(states_h)
+        proposed = CUDA.zeros(Int32, N_MODES, 3, max_t, nb)
+        melems   = CUDA.zeros(Float32, max_t, nb)
+        diag_part = CUDA.zeros(Float32, nb)
+
+        threads = 256
+        blocks = cld(nb, threads)
+        @cuda threads=threads blocks=blocks Physics._s2_kernel!(
+            states, proposed, melems, diag_part,
+            N_MODES, max_t
+        )
+
+        CUDA.synchronize()
+        P = Array(proposed)
+        M = Array(melems)
+        D = Array(diag_part) 
+
+        # 疎行列エントリの収集
+        for b in 1:nb
+            v = D[b]
+            v == 0.0f0 && continue    # パディング & 係数ゼロのチャネル (g0=0 の m1*m2=0 など)
+            push!(rows, chunk[b])
+            push!(cols, chunk[b])
+            push!(vals, Float64(v))
+        end
+        occ_buf = Vector{Int8}(undef, N_MODES * 3)
+        for b in 1:nb, t in 1:max_t
+            v = M[t, b]
+            v == 0.0f0 && continue    # パディング & 係数ゼロのチャネル (g0=0 の m1*m2=0 など)
+            for k in 1:N_MODES*3
+                occ_buf[k] = Int8(P[mod1(k, N_MODES), div(k - 1, N_MODES) + 1, t, b])
+            end
+            # ↑ P[m, s, t, b] を index = (s-1)*N_MODES + m の順で平坦化
+            j = get(index, occ_buf, 0)
+            if j == 0
+                error("カーネルがセクター外の状態を生成 (chunk=$ci, walker=$b, slot=$t)。" *
+                      "保存則の破れ = physics.jl のバグの可能性")
+            end
+            push!(rows, j)
+            push!(cols, chunk[b])
+            push!(vals, Float64(v))
+            occ_buf = copy(occ_buf)   # Dict のキーに使ったので新しいバッファに
+        end
+
+        @printf("  チャンク %d / %d 完了\n", ci, n_chunks)
+        flush(stdout)
+    end
+
+    S2 = sparse(rows, cols, vals, dim, dim)
+
+    return S2
 end
 
 # ============================================================

@@ -307,6 +307,17 @@ function main()
     @printf("\n<N_s>        = [%.6f, %.6f, %.6f]\n", Ns_mean...)
     @printf("<N_s(N_s-1)> = [%.6f, %.6f, %.6f]  (ρ₂(q=0) の理論値)\n", Ns_diag...)
 
+    # <N_s>, <N_s(N_s-1)>  (rho2(q=0) の検証用)
+    N_off = 0
+    for (i, occ) in enumerate(basis)
+        w = abs2(gs[i])
+        for s in 1:3
+            N_off += w * occ[cell_index(K_MAX + 1, s)]
+        end
+    end
+    N_off = N_PART - N_off
+    @printf("\n<N_off> = %.6f\n", N_off)
+
     return vals[1]
 end
 
