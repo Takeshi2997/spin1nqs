@@ -4,6 +4,7 @@ using ..Model
 using Lux
 using Zygote
 using LinearAlgebra
+using Statistics
 
 export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar
 
@@ -44,16 +45,16 @@ end
 """
 SR法
 """
-function SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay=0.996f0, lambda_min=1f-6)
+function SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
     # S行列とRベクトルの構築
     S = real.(OO_mean .- conj.(O_mean) * transpose(O_mean))          # S_kl
     R = real.(OE_mean .- O_mean .* E_mean)
 
     # 正則化（対角成分を少し底上げして逆行列計算を安定化）
     lambda = max(epsilon * decay^epoch, lambda_min) 
-    S_reg = S + lambda.* I + epsilon2 .* Diagonal(S)
+    S_reg = S + lambda .* I + epsilon2 .* Diagonal(S)
 
-    # 5. 連立方程式 S * Δp = R を解く
+    # 連立方程式 S * Δp = R を解く
     delta_p = S_reg \ R
 
     return delta_p
@@ -155,6 +156,7 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epoch, epsilon=0.0
     
     # E_centerd は1次元配列なので、O_centeredとの積でベクトルになる
     R = real.((transpose.(O) * E_centerd) ./ n_walkers)
+
 
     # 4. 正則化（対角成分を少し底上げして逆行列計算を安定化）
     lambda = max(epsilon2 * decay^epoch, lambda_min) 

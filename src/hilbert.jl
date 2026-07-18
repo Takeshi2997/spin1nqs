@@ -134,11 +134,11 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
         # 3. スピンの交換
         s1_new, s2_new = s1, s2
         rand_val = rand_vals[3, w]
-        if (s1 == 2 && s2 == 2) && rand_val < 0.5f0
+        if (s1 == 2 && s2 == 2) && rand_val < 0.9f0
             s1_new, s2_new = 1, 3
-        elseif (s1 == 1 && s2 == 3) && rand_val < 0.5f0
+        elseif (s1 == 1 && s2 == 3) && rand_val < 0.9f0
             s1_new, s2_new = 2, 2
-        elseif (s1 == 3 && s2 == 1) && rand_val < 0.5f0
+        elseif (s1 == 3 && s2 == 1) && rand_val < 0.9f0
             s1_new, s2_new = 2, 2
         else
             s1_new, s2_new = s1, s2

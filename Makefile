@@ -1,4 +1,3 @@
-.PHONY: test
 export JULIA_CUDA_MEMORY_POOL:=none
 
 main:
@@ -7,13 +6,16 @@ main:
 clean:
 	rm -f *.txt *.png *.dat nohup.out
 	rm -rf core
-	
+
+post:
+	julia ./posts/post.jl ./params/config_server.toml
+
 test:
-	julia ./test/runtests.jl ./params/config_server.toml
+	julia ./tests/runtests.jl ./params/config_server.toml
 
 exact:
-	julia ./test/exact.jl
+	julia ./tests/exact.jl
 
 compare:
-	julia ./test/ed_from_kernel.jl
+	julia ./tests/ed_from_kernel.jl
 

@@ -38,7 +38,7 @@ include("../src/model.jl")
 include("../src/hilbert.jl")
 include("../src/physics.jl")
 include("../src/jacobian.jl")
-include("./ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
+include("ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
 using .Model
 using .Hilbert
 using .Physics
@@ -69,6 +69,8 @@ const REF = (
         E0 = -0.2419300599,
         E1 = -0.1419631312,
         NsNs1 = [3.189819, 6.759276, 3.189819],
+        n_offzero = 0.033711,                            # l≠0 総占有
+        S2_tower = [0.0, 6.0, 20.0, 42.0],               # 低励起の <S^2> (S=0,2,4,6)
     ),
 )
 
@@ -80,17 +82,23 @@ const REF = (
 ## #       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
 ## #       ことを恒常的に保証する。
 ## # ============================================================
-## @testset "ハミルトニアン回帰 (k_max=1, 次元23067)" begin
+## @testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
 ##     basis = enumerate_basis(6)   # Sz=0, P=0
-##     @test length(basis) == 23607
+##     dim = length(basis)
+##     @test dim == 23607
 ## 
 ##     H_indep = build_H_independent(basis)
 ## 
 ##     # 独立実装のエルミート性と参照値
 ##     @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
-##     E = eigen(Symmetric(Matrix(H_indep))).values
-##     @test isapprox(E[1], REF.k1.E0; atol = 1e-9)
-##     @test isapprox(E[2], REF.k1.E1; atol = 1e-9)
+##     
+##     vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
+##                                 issymmetric = true,
+##                                 krylovdim = 60,
+##                                 maxiter = 500,
+##                                 tol = 1e-12)
+##     @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
+##     @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
 ## 
 ##     if GPU_OK
 ##         H_kernel = build_H_from_kernel(basis)
@@ -99,7 +107,7 @@ const REF = (
 ##         @test maximum(abs.(H_kernel - H_indep)) < 1e-5
 ##     end
 ## end
-## 
+
 ## # ============================================================
 ## # 2. 参照観測量 (独立EDの基底状態から)
 ## # ------------------------------------------------------------
@@ -145,55 +153,66 @@ const REF = (
 ##                 for s in 1:3, m in 1:n_modes if m != 2)
 ##     @test isapprox(n_off, REF.k1.n_offzero; atol = 1e-5)
 ## end
-## 
-## # ============================================================
-## # 3. tower of states (物理構造の固定)
-## # ------------------------------------------------------------
-## # 履歴: 低励起状態が全スピン S=0,2,4,6 の回転子の塔であることを確認済
-## #       (2026-07)。ハミルトニアン変更でこの構造が壊れたら検出する。
-## #       ギャップ ≈ (g1/4π)·S(S+1) は単一モード近似の予言。
-## # ============================================================
-## @testset "tower of states (k_max=1)" begin
-##     basis = enumerate_basis(6)
-##     n_modes = 3
-##     cell(m, s) = (s - 1) * n_modes + m
-##     H = Matrix(build_H_independent(basis))
-##     F = eigen(Symmetric(H))
-## 
-##     # S^2 演算子: S^2 = 2N + Σ_{l1,l2} T_{abcd} a†_{l1,a} a†_{l2,b} a_{l2,d} a_{l1,c}
-##     T = build_FF_tensor()
-##     D = length(basis)
-##     index = Dict(occ => i for (i, occ) in enumerate(basis))
-##     S2 = zeros(D, D)
-##     new_occ = zeros(Int8, n_modes * 3)
-##     for (i, occ) in enumerate(basis)
-##         S2[i, i] += 2.0 * 6
-##         for l1 in 1:n_modes, l2 in 1:n_modes,
-##             a in 1:3, b in 1:3, c in 1:3, d in 1:3
-##             t = T[a, b, c, d]
-##             abs(t) < 1e-15 && continue
-##             copyto!(new_occ, occ)
-##             i1 = cell(l1, c); new_occ[i1] == 0 && continue
-##             amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
-##             i2 = cell(l2, d); new_occ[i2] == 0 && continue
-##             amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
-##             j2 = cell(l2, b); new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
-##             j1 = cell(l1, a); new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
-##             j = get(index, new_occ, 0)
-##             j == 0 && continue
-##             S2[j, i] += t * amp
-##         end
-##     end
-## 
-##     for k in 1:4
-##         v = F.vectors[:, k]
-##         s2 = v' * S2 * v
-##         @test isapprox(s2, REF.k1.S2_tower[k]; atol = 1e-6)
-##     end
-##     # ギャップが回転子の予言 6*g1/(4π) の 10% 以内 (l≠0 補正込み)
-##     gap = F.values[2] - F.values[1]
-##     @test isapprox(gap, 6 * 0.2 / (4π); rtol = 0.10)
-## end
+
+# ============================================================
+# 3. tower of states (物理構造の固定)
+# ------------------------------------------------------------
+# 履歴: 低励起状態が全スピン S=0,2,4,6 の回転子の塔であることを確認済
+#       (2026-07)。ハミルトニアン変更でこの構造が壊れたら検出する。
+#       ギャップ ≈ (g1/4π)·S(S+1) は単一モード近似の予言。
+# ============================================================
+@testset "tower of states (k_max=1)" begin
+    basis = enumerate_basis(6)
+    D = length(basis)
+    n_modes = 3
+    cell(m, s) = (s - 1) * n_modes + m
+    H = Matrix(build_H_independent(basis))
+    vals, vecs, info = eigsolve(H, D, 4, :SR;
+                               issymmetric = true,
+                               krylovdim = 60,
+                               maxiter = 500,
+                               tol = 1e-12)
+
+    # S^2 演算子: S^2 = 2N + Σ_{l1,l2} T_{abcd} a†_{l1,a} a†_{l2,b} a_{l2,d} a_{l1,c}
+    T = build_FF_tensor()
+    index = Dict(occ => i for (i, occ) in enumerate(basis))
+    S2 = zeros(D, D)
+    new_occ = zeros(Int8, n_modes * 3)
+    for (i, occ) in enumerate(basis)
+        S2[i, i] += 2.0 * 6
+        for l1 in 1:n_modes, l2 in 1:n_modes,
+            a in 1:3, b in 1:3, c in 1:3, d in 1:3
+            t = T[a, b, c, d]
+            abs(t) < 1e-15 && continue
+            copyto!(new_occ, occ)
+            i1 = cell(l1, c); new_occ[i1] == 0 && continue
+            amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
+            i2 = cell(l2, d); new_occ[i2] == 0 && continue
+            amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
+            j2 = cell(l2, b); new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
+            j1 = cell(l1, a); new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
+            j = get(index, new_occ, 0)
+            j == 0 && continue
+            S2[j, i] += t * amp
+        end
+    end
+
+    for k in 1:4
+        v = vecs[k]
+        s2 = v' * S2 * v
+        @test isapprox(s2, REF.k1.S2_tower[k]; atol = 1e-6)
+    end
+    # ギャップが回転子の予言 6*g1/(4π) の 10% 以内 (l≠0 補正込み)
+    gap = vals[2] - vals[1]
+    @test isapprox(gap, 6 * 0.2 / (4π); rtol = 0.10)
+
+    if GPU_OK
+        S2_kernel = build_S2_from_kernel(basis)
+        # Float32 カーネルなので許容誤差は 1e-6 オーダー
+        @test maximum(abs.(S2_kernel - transpose(S2_kernel))) < 1e-5
+        @test maximum(abs.(S2_kernel - S2)) < 1e-5
+    end
+end
 ## 
 ## # ============================================================
 ## # 4. 初期状態の健全性
@@ -390,39 +409,39 @@ const REF = (
 ##     end
 ## end
 
-# ============================================================
-# 検証: Zygote との一致 (runtests.jl に移植すること)
-# ------------------------------------------------------------
-# 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
-# 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
-# ============================================================
-@testset "Jacobianテスト" begin
-    rng = Xoshiro(42)
-    model = build_momentum_nqs(1, hidden_dim=64)
-    ps, st = initialize_model(model, rng)
- 
-    function test_O_bar(model, ps, st; nb = 7)
-        rng = Random.default_rng()
-        n_in = 33                                        # ★ n_modes*3 に合わせる
-        inputs = CUDA.rand(Float32, n_in, nb) .* 3      # 適当な入力
-    
-        Ō, logψ = compute_O_bar(inputs, ps)
-    
-        # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
-        inputs_h = Array(inputs); ps_h = ps |> cpu_device()   # ★ CPU比較が楽
-        f_re(p) = real.(vec_eval(model, inputs_h, p, st))     # ★ 実装のeval関数に合わせる
-        f_im(p) = imag.(vec_eval(model, inputs_h, p, st))
-        J_re = Zygote.jacobian(f_re, ps_h)[1]                 # [nb, n_params]
-        J_im = Zygote.jacobian(f_im, ps_h)[1]
-        O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
-        Ō_ref = conj.(O_true)                                 # 規約B
-    
-        @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
-        # 前向きも一致するか
-        @test isapprox(Array(logψ), vec_eval(model, inputs_h, ps_h, st); rtol = 1e-5)
-        println("compute_O_bar: Zygote と一致 ✓")
-    end
-end
+## # ============================================================
+## # 検証: Zygote との一致 (runtests.jl に移植すること)
+## # ------------------------------------------------------------
+## # 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
+## # 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
+## # ============================================================
+## @testset "Jacobianテスト" begin
+##     rng = Xoshiro(42)
+##     model = build_momentum_nqs(1, hidden_dim=64)
+##     ps, st = initialize_model(model, rng)
+##  
+##     function test_O_bar(model, ps, st; nb = 7)
+##         rng = Random.default_rng()
+##         n_in = 33                                        # ★ n_modes*3 に合わせる
+##         inputs = CUDA.rand(Float32, n_in, nb) .* 3      # 適当な入力
+##     
+##         Ō, logψ = compute_O_bar(inputs, ps)
+##     
+##         # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
+##         inputs_h = Array(inputs); ps_h = ps |> cpu_device()   # ★ CPU比較が楽
+##         f_re(p) = real.(vec_eval(model, inputs_h, p, st))     # ★ 実装のeval関数に合わせる
+##         f_im(p) = imag.(vec_eval(model, inputs_h, p, st))
+##         J_re = Zygote.jacobian(f_re, ps_h)[1]                 # [nb, n_params]
+##         J_im = Zygote.jacobian(f_im, ps_h)[1]
+##         O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
+##         Ō_ref = conj.(O_true)                                 # 規約B
+##     
+##         @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
+##         # 前向きも一致するか
+##         @test isapprox(Array(logψ), vec_eval(model, inputs_h, ps_h, st); rtol = 1e-5)
+##         println("compute_O_bar: Zygote と一致 ✓")
+##     end
+## end
 
 
 println("\n全テスト完了")

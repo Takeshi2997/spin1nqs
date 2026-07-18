@@ -48,7 +48,7 @@ function main()
     commit = try readchomp(`git rev-parse --short HEAD`) catch; "unknown" end
     open(filename, "a") do io
         @printf(io, "[%s] ==== 学習開始 （Git commit:%s）====\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), commit)
-        @printf(io, "Epoch, UnixTime, Re<E>, Im<E>, VarE, <n1>, <n2>, <n3>, n_off,\n")
+        @printf(io, "Epoch, UnixTime, Re<E>, Im<E>, VarE, Re<S2>, Im<S2>, <n1>, <n2>, <n3>, n_off, n_clipping,\n")
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
@@ -113,10 +113,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260715_estimated/nqs_model_6466_epoch2000.jld2")
-    ## e_start = 2001
+    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ## e_start = 1
+    ps_cpu, st_cpu = load_nqs_model("./data/20260717_estimated/nqs_model_4610_epoch6000.jld2")
+    e_start = 6001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -137,9 +137,10 @@ function main()
     ## report("Initialize")
     # === 4. メイン学習ループ ===
     all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
+    n_clipping = 0
+    n_clipping_epoch = 0
     for epoch in e_start:n_epochs
         ## println("########## Epoch Start! ##########")
-        # このEpochでの観測量を蓄積するコンテナ
         ## prof = CUDA.@profile begin
         # A. サンプリングとデータ収集
         for step in 1:n_steps
@@ -153,7 +154,8 @@ function main()
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        E_sum   = 0.0 + 0.0im
+        E_sum  = 0.0 + 0.0im
+        S2_sum = 0.0 + 0.0im
         E2_sum  = 0.0
         O_sum   = CUDA.zeros(ComplexF32, n_params)           # Σ_x O_k(x)
         OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params) # Σ_x O_k*(x) O_l(x)
@@ -163,6 +165,7 @@ function main()
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             ## report("Evaluate network")
             E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+            S2_loc = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
             ## report("Compute local Energy")
             ## O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
             inputs_tmp = Float32.(reshape(inputs_c, (2 * k_max + 1) * 3, :))
@@ -174,12 +177,14 @@ function main()
             O_sum .+= dropdims(sum(O_c, dims=2), dims=2)
             OE_sum .+= O_c * E_loc_c
             OO_sum .+= conj.(O_c) * transpose(O_c)
+            S2_sum += sum(S2_loc)
         end
         E_mean = E_sum / n_total
         E2_mean = E2_sum / n_total
         O_mean = O_sum ./ n_total
         OO_mean = OO_sum ./ n_total
         OE_mean = OE_sum ./ n_total
+        S2_sum = S2_sum / n_total
 
         ## inputs = Float32.(all_states)
         ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
@@ -190,6 +195,8 @@ function main()
         E_real = real(ComplexF32(E_mean))
         E_imag = imag(ComplexF32(E_mean))
         E_var  = Float32(E2_mean - abs2(E_mean))
+        S2_real = real(ComplexF32(S2_sum))
+        S2_imag = imag(ComplexF32(S2_sum))
 
         n1_mean = sum(all_states[:, 1, :]) / n_total
         n2_mean = sum(all_states[:, 2, :]) / n_total
@@ -201,36 +208,40 @@ function main()
         # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、
         #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
+        # C. 進捗の表示
+        if epoch % log_iter == 0 || epoch == e_start
+            n_clipping_epoch += log_iter
+            clipping_ratio = n_clipping / n_clipping_epoch
+            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %6.3f,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
+            epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, clipping_ratio)
+            open(filename, "a") do io
+                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.3f,\n", 
+                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, clipping_ratio)
+            end
+        end
         if epoch % save_iter == 0
             inputs = Float32.(all_states[:, :, 1:chunk])
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
             eval_space_correlation(all_states[:, :, 1:chunk], outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
+            save_nqs_model(dirname, epoch, ps, st)
+            n_clipping = 0
         end
 
-        # C. 進捗の表示
-        if epoch % log_iter == 0 || epoch == e_start
-            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), epoch, E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
-            open(filename, "a") do io
-                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f,\n", epoch, time(), E_real, E_imag, E_var, n1_mean, n2_mean, n3_mean, n_off)
-            end
-        end
-        if epoch % save_iter == 0
-            save_nqs_model(dirname, epoch, ps, st)
-        end
-        
         ## report("Compute Average")
+
         # D. パラメータ更新のための勾配計算と更新
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
+
         delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
         ## report("SR")
-            
 
         gnorm = sqrt(sum(abs2, delta_p))
         if gnorm > 1.0f0
             delta_p .*= 1.0f0 / gnorm
+            n_clipping += 1
         end
         ps .= ps .- learning_rate .* delta_p
- 
+
         ## report("End")
         ## end
         ## display(prof)
