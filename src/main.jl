@@ -215,6 +215,8 @@ function main()
                 @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.3f,\n", 
                 epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             end
+
+            n_clipping = 0
         end
         if epoch % save_iter == 0
             inputs = Float32.(all_states[:, :, 1:chunk])
