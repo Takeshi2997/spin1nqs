@@ -101,8 +101,8 @@ end
 """
 function expand_params(ps_old::ComponentVector, k_max_old::Int, k_max_new::Int,
                        model_new, rng = Random.default_rng())
-    n_old = 2*k_max_old + 1        # 3
-    n_new = 2*k_max_new + 1        # 11
+    n_old = 2 * k_max_old + 1        # 3
+    n_new = 2 * k_max_new + 1        # 11
     offset = k_max_new - k_max_old # 4
 
     # 通常どおり初期化 (構造を得るため)
@@ -113,9 +113,9 @@ function expand_params(ps_old::ComponentVector, k_max_old::Int, k_max_new::Int,
     W_old = ps_old.layer_2.weight          # [hidden, 3*n_old] の view
     ps_new.layer_2.weight .= 0.0f0         # 新規列 (l=±2..±5) はゼロ
     for s in 1:3, m in 1:n_old
-        col_old = (s - 1) * n_old + m
-        col_new = (s - 1) * n_new + m + offset
-        ps_new.layer_2.weight[:, col_new] .= W_old[:, col_old]
+        row_old = (s - 1) * n_old + m
+        row_new = (s - 1) * n_new + m + offset
+        ps_new.layer_2.weight[row_new, :] .= W_old[row_old, :]
     end
     ps_new.layer_2.bias .= ps_old.layer_2.bias
 
