@@ -23,11 +23,11 @@ using .Sampler
 using .Physics
 
 function main()
-    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimate/"
+    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimated/"
     if !isdir(dirname)
         mkpath(dirname)
     end
-
+    
     # === 1. 物理・シミュレーションパラメータの設定 ===
     config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
     println("🔧 Loading configuration from: ", config_path)
@@ -44,10 +44,13 @@ function main()
     c1 = Float32(sys_config["c1"])
     target_Mz = sys_config["target_Mz"]
 
-    # 学習設定の読み込み
+    # 推定設定の読み込み
     estimate_config = config["estimate"]
     n_walkers = estimate_config["n_walkers"]
     n_thermal = estimate_config["n_thermal"]
+    n_interval = estimate_config["n_interval"]
+    n_steps = estimate_config["n_steps"]
+    n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
     model_config = config["model"]
@@ -75,11 +78,15 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    srcdir = "./data/20260718/"
-    filename = "nqs_model_4610_epoch10010.jld2"
+    srcdir = "./data/20260720/"
+    epoch = 24000
+    filename = "nqs_model_4610_epoch" * string(epoch) * ".jld2"
     cp(srcdir * filename, dirname * filename, force=true)
     ps_cpu, st_cpu = load_nqs_model(dirname * filename)
-    
+
+    filename  = dirname * "/data_log_epoch" * string(epoch) * ".txt"
+    io = open(filename, "w")
+   
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
@@ -96,69 +103,89 @@ function main()
         sample_step!(sampler, basis, accepted, nqs_model, k_max, n_particles, ps, st)
         acc_rate += sum(accepted) / basis.n_walkers
     end
-    println(acc_rate / n_thermal)
+    @printf(io, "accept ratio = %.4f\n", acc_rate / n_thermal)
     println("熱平衡化が完了しました。")
 
     # === 4. 推定 ===
     # サンプリングとデータ収集
     # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
-    inputs = basis.states
-    outputs = eval_complex_network(nqs_model, inputs, ps, st)
+    all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
+    for step in 1:n_steps
+        for _ in 1:n_interval
+            # マルコフ連鎖を1ステップ進める
+            sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        end
+        
+        all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
+    end
 
-    S2_loc = compute_local_S2(basis.states, outputs, n_particles, k_max, basis.threads, nqs_model, ps, st)
-    @printf("  <S²> = %.4f + i(%.4f)\n", real(sum(S2_loc)) / n_walkers, imag(sum(S2_loc)) / n_walkers)
- 
-    # 局所エネルギー E_loc の計算
-    E_loc = compute_local_energy(basis.states, outputs, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+    E_loc = ComplexF32[]
+    E2_loc = Float32[]
+    S2_loc = ComplexF32[]
+    for c in Iterators.partition(1:n_total, n_walkers)
+        inputs_c = all_states[:, :, c]                    # このチャンクだけGPUで処理
+        outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
+        E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
+        S2_loc_c = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
 
+        append!(E_loc, E_loc_c)
+        append!(E2_loc, abs2.(E_loc_c))
+        append!(S2_loc, S2_loc_c)
+    end
+    @printf(io, "<S²> = %.4f + i(%.4f)\n", real(sum(S2_loc)) / n_total, imag(sum(S2_loc)) / n_total)
     E_loc_real = Array(real.(E_loc))
-    println("min = ", minimum(E_loc_real))
-    println("max = ", maximum(E_loc_real))
-    println("median = ", median(E_loc_real))
+    println(io, "min = ", minimum(E_loc_real))
+    println(io, "max = ", maximum(E_loc_real))
+    println(io, "median = ", median(E_loc_real))
     # 上位10個
-    println(sort(E_loc_real, rev=true)[1:10])
+    println(io, sort(E_loc_real, rev=true)[1:10])
 
-    states_host = Array(basis.states)   # [n_modes, 3, n_walkers]
-    configs = [vec(states_host[:,:,w]) for w in 1:n_walkers]
+    states_host = Array(all_states)   # [n_modes, 3, n_walkers]
+    configs = [vec(states_host[:,:,w]) for w in 1:n_total]
     n_unique = length(unique(configs))
-    println("ユニーク配置数: $n_unique / $n_walkers")
+    println(io, "ユニーク配置数: $n_unique / $n_walkers")
     
     # 最頻配置の占有率
     cm = countmap(configs)
     top = sort(collect(cm), by=x->-x[2])[1:5]
     for (cfg, cnt) in top
-        println("  $cnt 匹 (", round(100*cnt/n_walkers, digits=1), "%)")
+        println(io, "  $cnt 匹 (", round(100*cnt/n_walkers, digits=1), "%)")
     end
 
     # 状態の詳細
     configs = [copy(states_host[:,:,w]) for w in 1:n_walkers]
     cm = countmap(configs)
     for (cfg, cnt) in sort(collect(cm), by=x->-x[2])[1:6]
-        println("$(cnt) 匹 ($(round(100cnt/n_walkers,digits=1))%)")
+        println(io, "$(cnt) 匹 ($(round(100cnt/n_walkers,digits=1))%)")
         for s in 1:3
             occ = [cfg[m,s] for m in 1:11]
-            println("  sz=$(s-2): ", occ, "  (N_s = $(sum(occ)))")
+            println(io, "  sz=$(s-2): ", occ, "  (N_s = $(sum(occ)))")
         end
         # 全運動量とエネルギー的な特徴
         P = sum(cfg[m,s]*(m-6) for m in 1:11, s in 1:3)
         Ekin = sum(cfg[m,s]*(m-6)^2 for m in 1:11, s in 1:3)
-        println("  P = $P, E_kin = $Ekin")
+        println(io, "  P = $P, E_kin = $Ekin")
     end
 
     # エネルギー期待値・粒子数期待値の算出
-    E_mean = sum(E_loc) / n_walkers
+    E_mean = sum(E_loc) / n_total
     E_real = real(E_mean)
     E_imag = imag(E_mean)
-    n1_mean = sum(basis.states[:, 1, :]) / n_walkers
-    n2_mean = sum(basis.states[:, 2, :]) / n_walkers
-    n3_mean = sum(basis.states[:, 3, :]) / n_walkers
-    @printf("E_real, E_imag, n1_mean, n2_mean, n3_mean, \n")
-    @printf("%10.5f, %10.5f, %6.3f, %6.3f, %6.3f,\n", E_real, E_imag, n1_mean, n2_mean, n3_mean)
+    E2_mean = sum(E2_loc) / n_total
+    VarE = Float32(E2_mean - abs2(E_mean))
+    n1_mean = sum(all_states[:, 1, :]) / n_total
+    n2_mean = sum(all_states[:, 2, :]) / n_total
+    n3_mean = sum(all_states[:, 3, :]) / n_total
+    @printf(io, "E_real, E_imag, VarE, n1_mean, n2_mean, n3_mean, \n")
+    @printf(io, "%10.5f, %10.5f, %10.5f, %10.5f, %6.3f, %6.3f,\n", E_real, E_imag, VarE, n1_mean, n2_mean, n3_mean)
 
     # 相関関数の評価
-    eval_space_correlation(basis.states, outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname)
+    inputs = Float32.(all_states[:, :, 1:n_walkers])
+    outputs = eval_complex_network(nqs_model, inputs, ps, st)
+    eval_space_correlation(all_states[:, :, 1:n_walkers], outputs, k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname)
 
     println("=== 計算が終了しました ===")
+    close(io)
 end
 
 function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname)

@@ -80,6 +80,7 @@ function main()
     epsilon2 = Float32(train_config["epsilon2"])
     decay = Float32(train_config["decay"])
     lambda_min = Float32(train_config["lambda_min"])
+    clipping_threshold = Float32(train_config["clipping_threshold"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -115,8 +116,8 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260717_estimated/nqs_model_4610_epoch6000.jld2")
-    ## e_start = 6001
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260720_estimated/nqs_model_4610_epoch23000.jld2")
+    ## e_start = 23001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -164,7 +165,7 @@ function main()
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             ## report("Evaluate network")
             E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
-            S2_loc = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
+            S2_loc_c = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
             ## report("Compute local Energy")
             ## O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
             inputs_tmp = Float32.(reshape(inputs_c, (2 * k_max + 1) * 3, :))
@@ -176,7 +177,7 @@ function main()
             O_sum .+= dropdims(sum(O_c, dims=2), dims=2)
             OE_sum .+= O_c * E_loc_c
             OO_sum .+= conj.(O_c) * transpose(O_c)
-            S2_sum += sum(S2_loc)
+            S2_sum += sum(S2_loc_c)
         end
         E_mean = E_sum / n_total
         E2_mean = E2_sum / n_total
@@ -209,10 +210,10 @@ function main()
         #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
-            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %6.3f,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
+            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
             epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             open(filename, "a") do io
-                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.3f,\n", 
+                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %4d,\n", 
                 epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             end
 
@@ -234,7 +235,7 @@ function main()
         ## report("SR")
 
         gnorm = sqrt(sum(abs2, delta_p))
-        if gnorm > 1.0f0
+        if gnorm > clipping_threshold
             delta_p .*= 1.0f0 / gnorm
             n_clipping += 1
         end
