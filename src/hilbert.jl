@@ -145,7 +145,7 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
         end
 
         # 4. 散乱後の波数を計算
-        q = floor(Int, rand_vals[4, w] * n_modes) - k_max
+        q = floor(Int, rand_vals[4, w] * n_modes) - k_max - 1
         k1 = m1 - k_max - 1
         k2 = m2 - k_max - 1
         k1_new = k1 + q
@@ -154,7 +154,7 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
         m2_new = k2_new + k_max + 1
 
         if m1_new < 1 || m2_new < 1 || m1_new > n_modes || m2_new > n_modes
-            h_factor[w] = 1
+            h_factor[w] = 1f0
             return
         end
         

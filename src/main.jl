@@ -114,15 +114,18 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260720_estimated/nqs_model_4610_epoch23000.jld2")
-    ## e_start = 23001
+    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    ## e_start = 1
+    ps_cpu, st_cpu = load_nqs_model("./data/20260724_estimated/nqs_model_4610_epoch3000.jld2")
+    e_start = 3001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
+
+    rule = Optimisers.Adam()
+    opt_state = Optimisers.setup(rule, ps)
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
@@ -231,15 +234,19 @@ function main()
         # D. パラメータ更新のための勾配計算と更新
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
 
-        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
-        ## report("SR")
+        ## SR法
+        ## delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
+        ## ## report("SR")
 
-        gnorm = sqrt(sum(abs2, delta_p))
-        if gnorm > clipping_threshold
-            delta_p .*= 1.0f0 / gnorm
-            n_clipping += 1
-        end
-        ps .= ps .- learning_rate .* delta_p
+        ## gnorm = sqrt(sum(abs2, delta_p))
+        ## if gnorm > clipping_threshold
+        ##     delta_p .*= 1.0f0 / gnorm
+        ##     n_clipping += 1
+        ## end
+        ## ps .= ps .- learning_rate .* delta_p
+
+        R = real.(OE_mean .- O_mean .* E_mean)
+        opt_state, ps = Optimisers.update!(opt_state, ps, R)
 
         ## report("End")
         ## end

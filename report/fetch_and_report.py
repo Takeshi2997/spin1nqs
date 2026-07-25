@@ -42,7 +42,7 @@ import matplotlib.pyplot as plt
 # 設定（環境変数から読み込み。無い場合はデフォルト値を使用）
 # ------------------------------------------------------------------
 REMOTE_HOST = os.environ.get("REMOTE_HOST", "takahashi@130.153.73.2")
-REMOTE_DIR = os.environ.get("REMOTE_DIR", "~/work/spin1nqs/data/20260719")
+REMOTE_DIR = os.environ.get("REMOTE_DIR", "~/work/spin1nqs/data/20260723")
 LOCAL_WORKDIR = Path(os.environ.get("LOCAL_WORKDIR", "../scp_data"))
 DATA_FILENAME = "data.txt"
 
