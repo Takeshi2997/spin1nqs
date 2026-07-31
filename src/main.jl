@@ -48,7 +48,7 @@ function main()
     commit = try readchomp(`git rev-parse --short HEAD`) catch; "unknown" end
     open(filename, "a") do io
         @printf(io, "[%s] ==== 学習開始 （Git commit:%s）====\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), commit)
-        @printf(io, "Epoch, UnixTime, Re<E>, Im<E>, VarE, Re<S2>, Im<S2>, <n1>, <n2>, <n3>, n_off, n_clipping,\n")
+        @printf(io, "Epoch, UnixTime, Re<E>, Im<E>, VarE, Re<S2>, Im<S2>, <n1>, <n2>, <n3>, n_off, n_eff, n_clipping,\n")
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
@@ -81,6 +81,7 @@ function main()
     decay = Float32(train_config["decay"])
     lambda_min = Float32(train_config["lambda_min"])
     clipping_threshold = Float32(train_config["clipping_threshold"])
+    beta = Float32(train_config["beta"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -114,10 +115,10 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ## ps_cpu, st_cpu = initialize_model(nqs_model, rng)
-    ## e_start = 1
-    ps_cpu, st_cpu = load_nqs_model("./data/20260724_estimated/nqs_model_4610_epoch3000.jld2")
-    e_start = 3001
+    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    e_start = 1
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260724_estimated/nqs_model_4610_epoch3000.jld2")
+    ## e_start = 3001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -134,7 +135,7 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for step in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
     end
     println("熱平衡化が完了しました。")
 
@@ -149,7 +150,7 @@ function main()
         for step in 1:n_steps
             for _ in 1:n_interval
                 # マルコフ連鎖を1ステップ進める
-                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st)
+                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
             end
             
             all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
@@ -160,11 +161,17 @@ function main()
         E_sum  = 0.0 + 0.0im
         S2_sum = 0.0 + 0.0im
         E2_sum  = 0.0
-        O_sum   = CUDA.zeros(ComplexF32, n_params)           # Σ_x O_k(x)
-        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params) # Σ_x O_k*(x) O_l(x)
-        OE_sum  = CUDA.zeros(ComplexF32, n_params)           # Σ_x O_k*(x) E_loc(x)
+        n1_sum = 0.0
+        n2_sum = 0.0
+        n3_sum = 0.0
+        np0_sum = 0.0
+        w_sum = 0.0
+        w2_sum = 0.0
+        O_sum   = CUDA.zeros(ComplexF32, n_params)
+        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params)
+        OE_sum  = CUDA.zeros(ComplexF32, n_params)
         for c in Iterators.partition(1:n_total, chunk)
-            inputs_c = all_states[:, :, c]                    # このチャンクだけGPUで処理
+            inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             ## report("Evaluate network")
             E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
@@ -175,19 +182,29 @@ function main()
             O_c, _ = compute_O_bar(inputs_tmp, ps)
             ## report("Compute jacobian")
 
-            E_sum  += sum(E_loc_c)
-            E2_sum += sum(abs2.(E_loc_c))
-            O_sum .+= dropdims(sum(O_c, dims=2), dims=2)
-            OE_sum .+= O_c * E_loc_c
-            OO_sum .+= conj.(O_c) * transpose(O_c)
-            S2_sum += sum(S2_loc_c)
+            logw = beta .* real.(outputs_c)
+            logw .- maximum(logw)
+            w = exp.(logw)
+            E_sum  += sum(w .* E_loc_c)
+            E2_sum += sum(w .* abs2.(E_loc_c))
+            n1_sum += sum(transpose(w) .* inputs_c[:, 1, :])
+            n2_sum += sum(transpose(w) .* inputs_c[:, 2, :])
+            n3_sum += sum(transpose(w) .* inputs_c[:, 3, :])
+            np0_sum += sum(transpose(w) .* inputs_c[k_max + 1, :, :])
+            O_sum  .+= dropdims(sum(transpose(w) .* O_c, dims=2), dims=2)
+            OE_sum .+= O_c * (w .* E_loc_c)
+            OO_sum .+= (transpose(w) .* conj.(O_c)) * transpose(O_c)
+            S2_sum  += sum(w .* S2_loc_c)
+            w_sum += sum(w)
+            w2_sum += sum(abs2.(w))
         end
-        E_mean = E_sum / n_total
-        E2_mean = E2_sum / n_total
-        O_mean = O_sum ./ n_total
-        OO_mean = OO_sum ./ n_total
-        OE_mean = OE_sum ./ n_total
-        S2_sum = S2_sum / n_total
+        E_mean = E_sum / w_sum
+        E2_mean = E2_sum / w_sum
+        O_mean = O_sum ./ w_sum
+        OO_mean = OO_sum ./ w_sum
+        OE_mean = OE_sum ./ w_sum
+        S2_sum = S2_sum / w_sum
+        w2_sum = w2_sum / w_sum^2
 
         ## inputs = Float32.(all_states)
         ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
@@ -201,23 +218,19 @@ function main()
         S2_real = real(ComplexF32(S2_sum))
         S2_imag = imag(ComplexF32(S2_sum))
 
-        n1_mean = sum(all_states[:, 1, :]) / n_total
-        n2_mean = sum(all_states[:, 2, :]) / n_total
-        n3_mean = sum(all_states[:, 3, :]) / n_total
+        n1_mean = n1_sum / w_sum
+        n2_mean = n2_sum / w_sum
+        n3_mean = n3_sum / w_sum
         # l≠0 モードの総占有 = N - (l=0 の占有)。states[k_max+1, :, :] が l=0 の全スピン
-        n_off = Float64(n_particles) - Float64(sum(all_states[k_max + 1, :, :])) / n_total
+        n_off = n_particles - np0_sum / w_sum
 
-        # 相関関数の評価は ps 更新「前」に行う。
-        # (basis.states は |psi_old|^2 からのサンプルであり、outputs も旧psでの評価なので、
-        #  ps 更新後に呼ぶと compute_local_correlation 内部の psi(x') だけが新psになり、
-        #  psi比 exp(log psi_new(x') - log psi_old(x)) が不整合になる)
         # C. 進捗の表示
         if epoch % log_iter == 0 || epoch == e_start
             @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
             epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             open(filename, "a") do io
-                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %4d,\n", 
-                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
+                @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.8f, %4d,\n", 
+                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, w2_sum, n_clipping)
             end
 
             n_clipping = 0
@@ -235,18 +248,15 @@ function main()
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
 
         ## SR法
-        ## delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
+        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
         ## ## report("SR")
 
-        ## gnorm = sqrt(sum(abs2, delta_p))
-        ## if gnorm > clipping_threshold
-        ##     delta_p .*= 1.0f0 / gnorm
-        ##     n_clipping += 1
-        ## end
-        ## ps .= ps .- learning_rate .* delta_p
-
-        R = real.(OE_mean .- O_mean .* E_mean)
-        opt_state, ps = Optimisers.update!(opt_state, ps, R)
+        gnorm = sqrt(sum(abs2, delta_p))
+        if gnorm > clipping_threshold
+            delta_p .*= 1.0f0 / gnorm
+            n_clipping += 1
+        end
+        ps .= ps .- learning_rate .* delta_p
 
         ## report("End")
         ## end
