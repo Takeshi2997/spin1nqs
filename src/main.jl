@@ -142,6 +142,7 @@ function main()
     ## report("Initialize")
     # === 4. メイン学習ループ ===
     all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
+    all_outputs = CUDA.zeros(ComplexF32, n_walkers * n_steps)
     n_clipping = 0
     for epoch in e_start:n_epochs
         ## println("########## Epoch Start! ##########")
@@ -158,21 +159,33 @@ function main()
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        E_sum  = 0.0 + 0.0im
-        S2_sum = 0.0 + 0.0im
-        E2_sum  = 0.0
-        n1_sum = 0.0
-        n2_sum = 0.0
-        n3_sum = 0.0
-        np0_sum = 0.0
-        w_sum = 0.0
-        w2_sum = 0.0
-        O_sum   = CUDA.zeros(ComplexF32, n_params)
-        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params)
-        OE_sum  = CUDA.zeros(ComplexF32, n_params)
+        logw_lst = CUDA.zeros(Float32, n_total)
         for c in Iterators.partition(1:n_total, chunk)
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
+            all_outputs[c] .= outputs_c
+            logw = beta .* real.(outputs_c)
+            logw_lst[c] = logw
+        end
+        logw_lst .-= maximum(logw_lst)
+        w_lst = exp.(logw_lst)
+        w_sum = sum(w_lst)
+        w2 = sum(w_lst.^2) / w_sum^2
+
+        E_sum  = 0
+        E2_sum = 0
+        S2_sum = 0
+        n1_sum = 0
+        n2_sum = 0
+        n3_sum = 0
+        np0_sum = 0
+        O_sum   = CUDA.zeros(ComplexF32, n_params)
+        OE_sum  = CUDA.zeros(ComplexF32, n_params)
+        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params)
+        for c in Iterators.partition(1:n_total, chunk)
+            inputs_c = all_states[:, :, c]
+            outputs_c = all_outputs[c]
+
             ## report("Evaluate network")
             E_loc_c = compute_local_energy(inputs_c, outputs_c, buffer.proposed_states, buffer.matrix_elements, params, basis.threads, nqs_model, ps, st)
             S2_loc_c = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
@@ -181,12 +194,11 @@ function main()
             inputs_tmp = Float32.(reshape(inputs_c, (2 * k_max + 1) * 3, :))
             O_c, _ = compute_O_bar(inputs_tmp, ps)
             ## report("Compute jacobian")
-
-            logw = beta .* real.(outputs_c)
-            logw .- maximum(logw)
-            w = exp.(logw)
+          
+            w = w_lst[c]
             E_sum  += sum(w .* E_loc_c)
             E2_sum += sum(w .* abs2.(E_loc_c))
+            S2_sum += sum(w .* S2_loc_c)
             n1_sum += sum(transpose(w) .* inputs_c[:, 1, :])
             n2_sum += sum(transpose(w) .* inputs_c[:, 2, :])
             n3_sum += sum(transpose(w) .* inputs_c[:, 3, :])
@@ -194,17 +206,13 @@ function main()
             O_sum  .+= dropdims(sum(transpose(w) .* O_c, dims=2), dims=2)
             OE_sum .+= O_c * (w .* E_loc_c)
             OO_sum .+= (transpose(w) .* conj.(O_c)) * transpose(O_c)
-            S2_sum  += sum(w .* S2_loc_c)
-            w_sum += sum(w)
-            w2_sum += sum(abs2.(w))
         end
-        E_mean = E_sum / w_sum
-        E2_mean = E2_sum / w_sum
-        O_mean = O_sum ./ w_sum
-        OO_mean = OO_sum ./ w_sum
+        E_mean  = sum(E_sum)  / w_sum
+        E2_mean = sum(E2_sum) / w_sum
+        S2_sum  = sum(S2_sum) / w_sum
+        O_mean  = O_sum  ./ w_sum
         OE_mean = OE_sum ./ w_sum
-        S2_sum = S2_sum / w_sum
-        w2_sum = w2_sum / w_sum^2
+        OO_mean = OO_sum ./ w_sum
 
         ## inputs = Float32.(all_states)
         ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
@@ -218,22 +226,23 @@ function main()
         S2_real = real(ComplexF32(S2_sum))
         S2_imag = imag(ComplexF32(S2_sum))
 
-        n1_mean = n1_sum / w_sum
-        n2_mean = n2_sum / w_sum
-        n3_mean = n3_sum / w_sum
+        n1_mean = sum(n1_sum) / w_sum
+        n2_mean = sum(n2_sum) / w_sum
+        n3_mean = sum(n3_sum) / w_sum
         # l≠0 モードの総占有 = N - (l=0 の占有)。states[k_max+1, :, :] が l=0 の全スピン
-        n_off = n_particles - np0_sum / w_sum
+        n_off = n_particles - sum(np0_sum) / w_sum
 
         # C. 進捗の表示
+        if epoch % log_iter == 0
+            n_clipping = 0
+        end
         if epoch % log_iter == 0 || epoch == e_start
-            @printf("[%s] Epoch %4d | <E> = %10.5f + i(%10.5f), Var = %6.5f, <S2> = %10.5f + i(%10.5f), <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
-            epoch, E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
+            @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
+            epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             open(filename, "a") do io
                 @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.8f, %4d,\n", 
-                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, w2_sum, n_clipping)
+                epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, w2, n_clipping)
             end
-
-            n_clipping = 0
         end
         if epoch % save_iter == 0
             inputs = Float32.(all_states[:, :, 1:chunk])
@@ -249,7 +258,7 @@ function main()
 
         ## SR法
         delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
-        ## ## report("SR")
+        ## report("SR")
 
         gnorm = sqrt(sum(abs2, delta_p))
         if gnorm > clipping_threshold
