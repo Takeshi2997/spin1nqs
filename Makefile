@@ -19,3 +19,6 @@ exact:
 compare:
 	julia ./tests/ed_from_kernel.jl
 
+check:
+	julia ./tests/check.jl ./params/config_server.toml
+

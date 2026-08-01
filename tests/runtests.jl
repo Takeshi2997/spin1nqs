@@ -74,39 +74,39 @@ const REF = (
     ),
 )
 
-## # ============================================================
-## # 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
-## # ------------------------------------------------------------
-## # 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
-## #       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
-## #       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
-## #       ことを恒常的に保証する。
-## # ============================================================
-## @testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
-##     basis = enumerate_basis(6)   # Sz=0, P=0
-##     dim = length(basis)
-##     @test dim == 23607
-## 
-##     H_indep = build_H_independent(basis)
-## 
-##     # 独立実装のエルミート性と参照値
-##     @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
-##     
-##     vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
-##                                 issymmetric = true,
-##                                 krylovdim = 60,
-##                                 maxiter = 500,
-##                                 tol = 1e-12)
-##     @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
-##     @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
-## 
-##     if GPU_OK
-##         H_kernel = build_H_from_kernel(basis)
-##         # Float32 カーネルなので許容誤差は 1e-6 オーダー
-##         @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
-##         @test maximum(abs.(H_kernel - H_indep)) < 1e-5
-##     end
-## end
+# ============================================================
+# 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
+# ------------------------------------------------------------
+# 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
+#       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
+#       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
+#       ことを恒常的に保証する。
+# ============================================================
+@testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
+    basis = enumerate_basis(6)   # Sz=0, P=0
+    dim = length(basis)
+    @test dim == 23607
+
+    H_indep = build_H_independent(basis)
+
+    # 独立実装のエルミート性と参照値
+    @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
+    
+    vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
+                                issymmetric = true,
+                                krylovdim = 60,
+                                maxiter = 500,
+                                tol = 1e-12)
+    @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
+    @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
+
+    if GPU_OK
+        H_kernel = build_H_from_kernel(basis)
+        # Float32 カーネルなので許容誤差は 1e-6 オーダー
+        @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
+        @test maximum(abs.(H_kernel - H_indep)) < 1e-5
+    end
+end
 
 ## # ============================================================
 ## # 2. 参照観測量 (独立EDの基底状態から)
@@ -154,65 +154,65 @@ const REF = (
 ##     @test isapprox(n_off, REF.k1.n_offzero; atol = 1e-5)
 ## end
 
-# ============================================================
-# 3. tower of states (物理構造の固定)
-# ------------------------------------------------------------
-# 履歴: 低励起状態が全スピン S=0,2,4,6 の回転子の塔であることを確認済
-#       (2026-07)。ハミルトニアン変更でこの構造が壊れたら検出する。
-#       ギャップ ≈ (g1/4π)·S(S+1) は単一モード近似の予言。
-# ============================================================
-@testset "tower of states (k_max=1)" begin
-    basis = enumerate_basis(6)
-    D = length(basis)
-    n_modes = 3
-    cell(m, s) = (s - 1) * n_modes + m
-    H = Matrix(build_H_independent(basis))
-    vals, vecs, info = eigsolve(H, D, 4, :SR;
-                               issymmetric = true,
-                               krylovdim = 60,
-                               maxiter = 500,
-                               tol = 1e-12)
-
-    # S^2 演算子: S^2 = 2N + Σ_{l1,l2} T_{abcd} a†_{l1,a} a†_{l2,b} a_{l2,d} a_{l1,c}
-    T = build_FF_tensor()
-    index = Dict(occ => i for (i, occ) in enumerate(basis))
-    S2 = zeros(D, D)
-    new_occ = zeros(Int8, n_modes * 3)
-    for (i, occ) in enumerate(basis)
-        S2[i, i] += 2.0 * 6
-        for l1 in 1:n_modes, l2 in 1:n_modes,
-            a in 1:3, b in 1:3, c in 1:3, d in 1:3
-            t = T[a, b, c, d]
-            abs(t) < 1e-15 && continue
-            copyto!(new_occ, occ)
-            i1 = cell(l1, c); new_occ[i1] == 0 && continue
-            amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
-            i2 = cell(l2, d); new_occ[i2] == 0 && continue
-            amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
-            j2 = cell(l2, b); new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
-            j1 = cell(l1, a); new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
-            j = get(index, new_occ, 0)
-            j == 0 && continue
-            S2[j, i] += t * amp
-        end
-    end
-
-    for k in 1:4
-        v = vecs[k]
-        s2 = v' * S2 * v
-        @test isapprox(s2, REF.k1.S2_tower[k]; atol = 1e-6)
-    end
-    # ギャップが回転子の予言 6*g1/(4π) の 10% 以内 (l≠0 補正込み)
-    gap = vals[2] - vals[1]
-    @test isapprox(gap, 6 * 0.2 / (4π); rtol = 0.10)
-
-    if GPU_OK
-        S2_kernel = build_S2_from_kernel(basis)
-        # Float32 カーネルなので許容誤差は 1e-6 オーダー
-        @test maximum(abs.(S2_kernel - transpose(S2_kernel))) < 1e-5
-        @test maximum(abs.(S2_kernel - S2)) < 1e-5
-    end
-end
+## # ============================================================
+## # 3. tower of states (物理構造の固定)
+## # ------------------------------------------------------------
+## # 履歴: 低励起状態が全スピン S=0,2,4,6 の回転子の塔であることを確認済
+## #       (2026-07)。ハミルトニアン変更でこの構造が壊れたら検出する。
+## #       ギャップ ≈ (g1/4π)·S(S+1) は単一モード近似の予言。
+## # ============================================================
+## @testset "tower of states (k_max=1)" begin
+##     basis = enumerate_basis(6)
+##     D = length(basis)
+##     n_modes = 3
+##     cell(m, s) = (s - 1) * n_modes + m
+##     H = Matrix(build_H_independent(basis))
+##     vals, vecs, info = eigsolve(H, D, 4, :SR;
+##                                issymmetric = true,
+##                                krylovdim = 60,
+##                                maxiter = 500,
+##                                tol = 1e-12)
+## 
+##     # S^2 演算子: S^2 = 2N + Σ_{l1,l2} T_{abcd} a†_{l1,a} a†_{l2,b} a_{l2,d} a_{l1,c}
+##     T = build_FF_tensor()
+##     index = Dict(occ => i for (i, occ) in enumerate(basis))
+##     S2 = zeros(D, D)
+##     new_occ = zeros(Int8, n_modes * 3)
+##     for (i, occ) in enumerate(basis)
+##         S2[i, i] += 2.0 * 6
+##         for l1 in 1:n_modes, l2 in 1:n_modes,
+##             a in 1:3, b in 1:3, c in 1:3, d in 1:3
+##             t = T[a, b, c, d]
+##             abs(t) < 1e-15 && continue
+##             copyto!(new_occ, occ)
+##             i1 = cell(l1, c); new_occ[i1] == 0 && continue
+##             amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
+##             i2 = cell(l2, d); new_occ[i2] == 0 && continue
+##             amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
+##             j2 = cell(l2, b); new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
+##             j1 = cell(l1, a); new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
+##             j = get(index, new_occ, 0)
+##             j == 0 && continue
+##             S2[j, i] += t * amp
+##         end
+##     end
+## 
+##     for k in 1:4
+##         v = vecs[k]
+##         s2 = v' * S2 * v
+##         @test isapprox(s2, REF.k1.S2_tower[k]; atol = 1e-6)
+##     end
+##     # ギャップが回転子の予言 6*g1/(4π) の 10% 以内 (l≠0 補正込み)
+##     gap = vals[2] - vals[1]
+##     @test isapprox(gap, 6 * 0.2 / (4π); rtol = 0.10)
+## 
+##     if GPU_OK
+##         S2_kernel = build_S2_from_kernel(basis)
+##         # Float32 カーネルなので許容誤差は 1e-6 オーダー
+##         @test maximum(abs.(S2_kernel - transpose(S2_kernel))) < 1e-5
+##         @test maximum(abs.(S2_kernel - S2)) < 1e-5
+##     end
+## end
 ## 
 ## # ============================================================
 ## # 4. 初期状態の健全性
