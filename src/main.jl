@@ -170,7 +170,7 @@ function main()
         logw_lst .-= maximum(logw_lst)
         w_lst = exp.(logw_lst)
         w_sum = sum(w_lst)
-        w2 = sum(w_lst.^2) / w_sum^2
+        w2 = w_sum^2 / sum(w_lst.^2) / n_total
 
         E_sum  = 0
         E2_sum = 0
