@@ -247,7 +247,10 @@ function main()
         if epoch % save_iter == 0
             inputs = Float32.(all_states[:, :, 1:chunk])
             outputs = eval_complex_network(nqs_model, inputs, ps, st)
-            eval_space_correlation(all_states[:, :, 1:chunk], outputs, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
+            logw = beta .* real.(outputs)
+            logw .-= maximum(logw)
+            w = exp.(logw)
+            eval_space_correlation(all_states[:, :, 1:chunk], outputs, w, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
         end
 
@@ -275,26 +278,26 @@ function main()
     println("=== 学習が正常に終了しました ===")
 end
 
-function eval_space_correlation(states, outputs, k_max, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
+function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
     filename  = dirname * "/space_correlation_epoch$(epoch).txt"
     if isfile(filename)
         rm(filename)
     end
     touch(filename)
 
-    # 現在の 186-195 行目を以下で置き換え
-    # rho2,s(q=0) = <N_s (N_s - 1)>, N_s = sum_k n_{k,s}
-    # ψ を変えない全項の和なので、占有数だけから直接計算できる。
+    ## 規格化定数
+    w_sum = sum(w)
+
+    ## 対角要素
     Ns_w = dropdims(sum(states, dims=1), dims=1)
-    Ns_diag = Array(dropdims(sum(Ns_w .* (Ns_w .- Int32(1)), dims=2), dims=2) ./ n_walkers)
+    Ns_diag = Array(dropdims(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
     n1_diag = Float32(Ns_diag[1])
     n2_diag = Float32(Ns_diag[2])
     n3_diag = Float32(Ns_diag[3])
 
-    # 新しい compute_local_correlation の戻り値は [n_modes(=q平面), 3, n_walkers]。
-    # ウォーカー方向 (dims=3) で平均する (旧レイアウト [n_walkers, n_modes, 3] では dims=1 だった)
+    ## 運動量空間の相関関数
     rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
-    rho2_q_mean = Array(dropdims(sum(rho2_q_loc, dims=3), dims=3) ./ n_walkers)   # [n_modes, 3]
+    rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, :), dims=3), dims=3) ./ w_sum)   # [n_modes, 3]
     rho2_q_1 = rho2_q_mean[:, 1]
     rho2_q_2 = rho2_q_mean[:, 2]
     rho2_q_3 = rho2_q_mean[:, 3]
