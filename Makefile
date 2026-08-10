@@ -9,6 +9,9 @@ clean:
 
 post:
 	julia ./posts/post.jl ./params/config_server.toml
+	
+postcompare:
+	julia ./posts/post_compare.jl ./params/config_server.toml
 
 test:
 	julia ./tests/runtests.jl ./params/config_server.toml

@@ -22,10 +22,11 @@ clipping_threshold = 10.0
 beta = 1.3
 
 [estimate]
-n_walkers = 2048
-n_thermal = 512
-n_steps = 1024
-n_interval = 64
+chunk = 2048
+n_walkers = 128
+n_thermal = 1024
+n_steps = 2048
+n_interval = 128
 beta = 1.3
 
 [model]
