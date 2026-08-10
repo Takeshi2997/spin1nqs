@@ -177,12 +177,6 @@ function main()
     # l≠0 モードの総占有 = N - (l=0 の占有)。states[k_max+1, :, :] が l=0 の全スピン
     n_off = n_particles - sum(np0_sum) / w_sum
 
-    E_real = real(E_mean)
-    E_imag = imag(E_mean)
-    E_var = Float32(E2_mean - abs2(E_mean))
-    n1_mean = sum(all_states[:, 1, :]) / n_total
-    n2_mean = sum(all_states[:, 2, :]) / n_total
-    n3_mean = sum(all_states[:, 3, :]) / n_total
     @printf(io, "%10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, \n", 
     E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off)
  
