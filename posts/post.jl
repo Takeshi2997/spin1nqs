@@ -47,6 +47,7 @@ function main()
 
     # 推定設定の読み込み
     estimate_config = config["estimate"]
+    chunk = estimate_config["chunk"]
     n_walkers = estimate_config["n_walkers"]
     n_steps = estimate_config["n_steps"]
     n_thermal = estimate_config["n_thermal"]
@@ -96,7 +97,7 @@ function main()
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), n_walkers)
+    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), chunk)
  
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
@@ -127,7 +128,7 @@ function main()
    
     println("=== 推定を開始します ===")
     logw_lst = CUDA.zeros(Float32, n_total)
-    for c in Iterators.partition(1:n_walkers, n_total)
+    for c in Iterators.partition(1:n_total, chunk)
         inputs_c = all_states[:, :, c]
         outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
         all_outputs[c] .= outputs_c
@@ -145,7 +146,7 @@ function main()
     n2_sum = 0
     n3_sum = 0
     np0_sum = 0
-    for c in Iterators.partition(1:n_walkers, n_total)
+    for c in Iterators.partition(1:n_total, chunk)
         inputs_c = all_states[:, :, c]
         outputs_c = all_outputs[c]
 
@@ -181,9 +182,9 @@ function main()
     E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off)
  
     # 相関関数の評価
-    inputs = Float32.(all_states[:, :, 1:n_walkers])
+    inputs = Float32.(all_states[:, :, 1:chunk])
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
-    eval_space_correlation(all_states[:, :, 1:n_walkers], outputs, w_lst[1:n_walkers], k_max, basis.threads, n_walkers, nqs_model, ps, st, dirname)
+    eval_space_correlation(all_states[:, :, 1:chunk], outputs, w_lst[1:chunk], k_max, basis.threads, chunk, nqs_model, ps, st, dirname)
 
     println("=== 計算が終了しました ===")
     close(io)
