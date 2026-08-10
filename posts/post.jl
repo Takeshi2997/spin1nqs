@@ -123,7 +123,7 @@ function main()
         
         all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
     end
-    @printf(io, "accept ratio = %.4f\n", acc_rate / n_total)
+    @printf(io, "accept ratio = %.4f\n", acc_rate / (n_steps * n_interval))
     println("サンプリングが完了しました。")
    
     println("=== 推定を開始します ===")
@@ -178,19 +178,20 @@ function main()
     # l≠0 モードの総占有 = N - (l=0 の占有)。states[k_max+1, :, :] が l=0 の全スピン
     n_off = n_particles - sum(np0_sum) / w_sum
 
+    @printf(io, "Re<E>, Im<E>, VarE, Re<S2>, Im<S2>, <n1>, <n2>, <n3>, n_off, \n")
     @printf(io, "%10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, \n", 
     E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off)
  
     # 相関関数の評価
-    inputs = Float32.(all_states[:, :, 1:chunk])
+    inputs = Float32.(all_states)
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
-    eval_space_correlation(all_states[:, :, 1:chunk], outputs, w_lst[1:chunk], k_max, basis.threads, chunk, nqs_model, ps, st, dirname)
+    eval_space_correlation(all_states, outputs, w_lst, k_max, basis.threads, n_total, chunk, nqs_model, ps, st, dirname)
 
     println("=== 計算が終了しました ===")
     close(io)
 end
 
-function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, nqs_model, ps, st, dirname)
+function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname)
     filename  = dirname * "space_correlation.txt"
     if isfile(filename)
         rm(filename)
@@ -198,18 +199,25 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, n
     touch(filename)
     
     ## 規格化定数
-    w_sum = sum(w)
+    w_sum = sum(w_lst)
 
     ## 対角要素
     Ns_w = dropdims(sum(states, dims=1), dims=1)
-    Ns_diag = Array(dropdims(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
+    Ns_diag = Array(dropdims(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w_lst, 1, :), dims=2), dims=2) ./ w_sum)
     n1_diag = Float32(Ns_diag[1])
     n2_diag = Float32(Ns_diag[2])
     n3_diag = Float32(Ns_diag[3])
 
     ## 運動量空間の相関関数
-    rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
-    rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, :), dims=3), dims=3) ./ w_sum)   # [n_modes, 3]
+    rho2_q_loc = CUDA.zeros(ComplexF32, 2 * k_max + 1, 3)
+    for c in Iterators.partition(1:n_total, chunk)
+        inputs_c = states[:, :, c]
+        outputs_c = outputs[c]
+        w = w_lst[c]
+        rho2_q_loc_c = compute_local_correlation(inputs_c, outputs_c, k_max, threads, nqs_model, ps, st)
+        rho2_q_loc += dropdims(sum(rho2_q_loc_c .* reshape(w, 1, 1, :), dims=3), dims=3)
+    end
+    rho2_q_mean = Array(rho2_q_loc ./ w_sum)   # [n_modes, 3]
     rho2_q_1 = rho2_q_mean[:, 1]
     rho2_q_2 = rho2_q_mean[:, 2]
     rho2_q_3 = rho2_q_mean[:, 3]
