@@ -203,29 +203,33 @@ function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total,
 
     ## 対角要素
     Ns_w = dropdims(sum(states, dims=1), dims=1)
-    Ns_diag = Array(dropdims(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w_lst, 1, :), dims=2), dims=2) ./ w_sum)
+    Ns_diag = dropdims(Array(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w_lst, 1, :), dims=2) ./ w_sum), dims=2)
     n1_diag = Float32(Ns_diag[1])
     n2_diag = Float32(Ns_diag[2])
     n3_diag = Float32(Ns_diag[3])
+    Nd_w = dropdims(sum(states, dims=(1, 2)), dims=(1, 2))
+    Nd_diag = sum(Nd_w .* (Nd_w .- Int32(1)) .* w_lst) ./ w_sum
+    nd_diag = Float32(Nd_diag)
 
     ## 運動量空間の相関関数
-    rho2_q_loc = CUDA.zeros(ComplexF32, 2 * k_max + 1, 3)
+    rho2_q_loc = CUDA.zeros(ComplexF32, 2 * k_max + 1, 3, 3)
     for c in Iterators.partition(1:n_total, chunk)
         inputs_c = states[:, :, c]
         outputs_c = outputs[c]
         w = w_lst[c]
         rho2_q_loc_c = compute_local_correlation(inputs_c, outputs_c, k_max, threads, nqs_model, ps, st)
-        rho2_q_loc += dropdims(sum(rho2_q_loc_c .* reshape(w, 1, 1, :), dims=3), dims=3)
+        rho2_q_loc += dropdims(sum(rho2_q_loc_c .* reshape(w, 1, 1, 1, :), dims=4), dims=4)
     end
     rho2_q_mean = Array(rho2_q_loc ./ w_sum)   # [n_modes, 3]
-    rho2_q_1 = rho2_q_mean[:, 1]
-    rho2_q_2 = rho2_q_mean[:, 2]
-    rho2_q_3 = rho2_q_mean[:, 3]
-    rho2_q   = dropdims(sum(rho2_q_mean, dims=2), dims = 2)
+    rho2_q_1 = rho2_q_mean[:, 1, 1]
+    rho2_q_2 = rho2_q_mean[:, 2, 2]
+    rho2_q_3 = rho2_q_mean[:, 3, 3]
+    rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
     rho2_q_1[k_max + 1] = n1_diag
     rho2_q_2[k_max + 1] = n2_diag
     rho2_q_3[k_max + 1] = n3_diag
-    rho2_q[k_max + 1]   = n1_diag + n2_diag + n3_diag
+    rho2_q_d[k_max + 1] = nd_diag
+    println(nd_diag)
 
     # フーリエ変換
     L_box = Float32(2 * π)
@@ -235,21 +239,22 @@ function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total,
     cor1_x_vec = real.(W * rho2_q_1) ./ L_box
     cor2_x_vec = real.(W * rho2_q_2) ./ L_box
     cor3_x_vec = real.(W * rho2_q_3) ./ L_box
-    cor_x_vec  = real.(W * rho2_q) ./ L_box
+    println(size(rho2_q_d))
+    cord_x_vec  = real.(W * rho2_q_d) ./ L_box
 
     @printf("n1_diag, n2_diag, n3_diag, max_correlation,\n") 
     @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n1_diag, n2_diag, n3_diag, maximum(abs.(cor1_x_vec - cor3_x_vec)))
 
     open(filename, "a") do io
-        @printf(io, "x, <n1>, <n2>, <n3>, <n_total>,\n")
+        @printf(io, "x, <n1>, <n2>, <n3>, <nd>,\n")
     end
     for x in 1:1000
         cor1_x = cor1_x_vec[x]
         cor2_x = cor2_x_vec[x]
         cor3_x = cor3_x_vec[x]
-        cor_x  = cor_x_vec[x]
+        cord_x = cord_x_vec[x]
         open(filename, "a") do io
-            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, \n", x_grid[x], cor1_x, cor2_x, cor3_x, cor_x)
+            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, \n", x_grid[x], cor1_x, cor2_x, cor3_x, cord_x)
         end
     end
     
