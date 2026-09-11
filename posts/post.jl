@@ -81,7 +81,7 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    srcdir = "./data/20260809/"
+    srcdir = "./data_server/20260809/"
     epoch = 50000
     filename = "nqs_model_4610_epoch" * string(epoch) * ".jld2"
     cp(srcdir * filename, dirname * filename, force=true)

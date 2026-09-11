@@ -294,7 +294,9 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, n
     n1_diag = Float32(Ns_diag[1])
     n2_diag = Float32(Ns_diag[2])
     n3_diag = Float32(Ns_diag[3])
-
+    ## 1, 2; 2, 3; 3, 1 の相関用
+    Nss_off = Array(dropdims(sum(Ns_w .* circshift(Ns_w, 1) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
+ 
     ## 運動量空間の相関関数
     rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
     rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, :), dims=3), dims=3) ./ w_sum)   # [n_modes, 3]
@@ -304,7 +306,9 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, n
     rho2_q_1[k_max + 1] = n1_diag
     rho2_q_2[k_max + 1] = n2_diag
     rho2_q_3[k_max + 1] = n3_diag
-
+    ## 1, 2; 2, 3; 3, 1 の相関用
+    rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, :), dims=3), dims=3) ./ w_sum)   # [n_modes, 3]
+ 
     # フーリエ変換
     L_box = Float32(2 * π)
     x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
