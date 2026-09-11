@@ -282,7 +282,7 @@ function compute_local_correlation(
     n_modes = 2 * k_max + 1
     n_q = 2 * k_max            # q = -k_max..-1, +1..+k_max (q=0 は対角項なので別扱い)
     max_t_per = n_modes^2      # 1つの (s, q) ブロックが必要とするスロット数の上限
-    total_t = 3 * n_q * max_t_per
+    total_t = 9 * n_q * max_t_per
 
     # 通しインデックス total_t で proposed_states と matrix_elements を 1対1 対応させる
     proposed_states = CUDA.zeros(Int32, n_modes, 3, total_t, n_walkers)
@@ -311,14 +311,14 @@ function compute_local_correlation(
     psi_ratio = exp.(log_psi_prop .- reshape(log_psi_current, 1, :))
     contrib = matrix_elements .* psi_ratio                       # [total_t, n_walkers]
 
-    # (F) ブロック構造 [max_t_per, n_q, 3, n_walkers] に戻し、スロット方向に和をとる
-    contrib = reshape(contrib, max_t_per, n_q, 3, n_walkers)
+    # (F) ブロック構造 [max_t_per, n_q, 9, n_walkers] に戻し、スロット方向に和をとる
+    contrib = reshape(contrib, max_t_per, n_q, 3, 3, n_walkers)
     rho2_qs = dropdims(sum(contrib, dims=1), dims=1)             # [n_q, 3, n_walkers]
 
-    # (G) 旧来の [n_modes(=q平面), 3, n_walkers] レイアウトに詰め直す (q=0 平面はゼロのまま)
-    rho2_q = CUDA.zeros(ComplexF32, n_modes, 3, n_walkers)
-    rho2_q[1:k_max, :, :] .= rho2_qs[1:k_max, :, :]    # q = -k_max..-1
-    rho2_q[k_max+2:n_modes, :, :] .= rho2_qs[k_max+1:n_q, :, :] # q = +1..+k_max
+    # (G) 旧来の [n_modes(=q平面), 3, 3, n_walkers] レイアウトに詰め直す (q=0 平面はゼロのまま)
+    rho2_q = CUDA.zeros(ComplexF32, n_modes, 3, 3, n_walkers)
+    rho2_q[1:k_max, :, :, :] .= rho2_qs[1:k_max, :, :, :]    # q = -k_max..-1
+    rho2_q[k_max+2:n_modes, :, :, :] .= rho2_qs[k_max+1:n_q, :, :, :] # q = +1..+k_max
     
     return rho2_q
 end
@@ -339,19 +339,19 @@ function _correlation_kernel!(
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
 
     if w <= size(states, 3)
-        for s in 1:3
+        for s1 in 1:3, s2 in 1:3
             for qi in 1:n_q
                 # qi = 1..k_max -> q = -k_max..-1,  qi = k_max+1..2k_max -> q = +1..+k_max
                 q = qi <= k_max ? qi - k_max - 1 : qi - k_max
-                base = ((s - 1) * n_q + (qi - 1)) * max_t_per
+                base = (((s1 - 1) * 3 + (s2 - 1)) * n_q + (qi - 1)) * max_t_per
                 t = 1
 
                 for m1 in 1:n_modes
-                    n1 = states[m1, s, w]
+                    n1 = states[m1, s1, w]
                     if n1 == 0; continue; end
                     
                     for m2 in 1:n_modes
-                        n2 = states[m2, s, w]
+                        n2 = states[m2, s2, w]
                         if n2 == 0; continue; end
 
                         # 同一モードから2つ選ぶ場合は、2個以上いる必要がある
@@ -366,11 +366,11 @@ function _correlation_kernel!(
 
                         transition_idx = base + t
                         # 状態をコピーして更新 (このスロットは以後上書きされない)
-                        _update_proposed_states!(proposed_states, states, n_modes, m1, s, m2, s, m1_new, s, m2_new, s, transition_idx, w)
+                        _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1, m2_new, s2, transition_idx, w)
 
                         # 行列要素の計算
                         factor_annihilate = Float32(n1) * Float32(m1 == m2 ? n2 - 1 : n2)
-                        matrix_elements[transition_idx, w] = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s, m2_new, s, transition_idx, w)
+                        matrix_elements[transition_idx, w] = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1, m2_new, s2, transition_idx, w)
 
                         t += 1
                     end
