@@ -24,7 +24,12 @@ using .Sampler
 using .Physics
 
 function main()
-    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_estimated/"
+    srcday = "20260911"
+    srcdir = "./data_server/" * srcday
+    epoch = 9000
+    filename = "nqs_model_2306_epoch" * string(epoch) * ".jld2"
+
+    dirname = "./data/" * srcday * "_estimated/"
     if !isdir(dirname)
         mkpath(dirname)
     end
@@ -81,9 +86,6 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    srcdir = "./data_server/20260809/"
-    epoch = 50000
-    filename = "nqs_model_4610_epoch" * string(epoch) * ".jld2"
     cp(srcdir * filename, dirname * filename, force=true)
     ps_cpu, st_cpu = load_nqs_model(dirname * filename)
 
@@ -191,7 +193,7 @@ function main()
     close(io)
 end
 
-function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname)
+function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname)
     filename  = dirname * "space_correlation.txt"
     if isfile(filename)
         rm(filename)
@@ -199,16 +201,32 @@ function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total,
     touch(filename)
     
     ## 規格化定数
-    w_sum = sum(w_lst)
+    w_sum = sum(w)
+
+    ## ## 対角要素
+    ## Ns_w = dropdims(sum(states, dims=1), dims=1)
+    ## Ns_diag = dropdims(Array(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w_lst, 1, :), dims=2) ./ w_sum), dims=2)
+    ## n1_diag = Float32(Ns_diag[1])
+    ## n2_diag = Float32(Ns_diag[2])
+    ## n3_diag = Float32(Ns_diag[3])
+    ## Nd_w = dropdims(sum(states, dims=(1, 2)), dims=(1, 2))
+    ## Nd_diag = sum(Nd_w .* (Nd_w .- Int32(1)) .* w_lst) ./ w_sum
+    ## nd_diag = Float32(Nd_diag)
 
     ## 対角要素
     Ns_w = dropdims(sum(states, dims=1), dims=1)
-    Ns_diag = dropdims(Array(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w_lst, 1, :), dims=2) ./ w_sum), dims=2)
-    n1_diag = Float32(Ns_diag[1])
-    n2_diag = Float32(Ns_diag[2])
-    n3_diag = Float32(Ns_diag[3])
+    Ns_diag = dropdims(Array(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w, 1, :), dims=2) ./ w_sum), dims=2)
+    n11_diag = Float32(Ns_diag[1])
+    n22_diag = Float32(Ns_diag[2])
+    n33_diag = Float32(Ns_diag[3])
+    ## 1, 2; 2, 3; 3, 1 の相関用
+    Nss_off = Array(dropdims(sum(Ns_w .* circshift(Ns_w, 1) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
+    n12_diag = Float32(Nss_off[1])
+    n23_diag = Float32(Nss_off[2])
+    n31_diag = Float32(Nss_off[3])
+    ## 全粒子数の対角要素
     Nd_w = dropdims(sum(states, dims=(1, 2)), dims=(1, 2))
-    Nd_diag = sum(Nd_w .* (Nd_w .- Int32(1)) .* w_lst) ./ w_sum
+    Nd_diag = sum(Nd_w .* (Nd_w .- Int32(1)) .* w) ./ w_sum
     nd_diag = Float32(Nd_diag)
 
     ## 運動量空間の相関関数
@@ -216,18 +234,35 @@ function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total,
     for c in Iterators.partition(1:n_total, chunk)
         inputs_c = states[:, :, c]
         outputs_c = outputs[c]
-        w = w_lst[c]
+        w_tmp = w[c]
         rho2_q_loc_c = compute_local_correlation(inputs_c, outputs_c, k_max, threads, nqs_model, ps, st)
-        rho2_q_loc += dropdims(sum(rho2_q_loc_c .* reshape(w, 1, 1, 1, :), dims=4), dims=4)
+        rho2_q_loc += dropdims(sum(rho2_q_loc_c .* reshape(w_tmp, 1, 1, 1, :), dims=4), dims=4)
     end
     rho2_q_mean = Array(rho2_q_loc ./ w_sum)   # [n_modes, 3]
-    rho2_q_1 = rho2_q_mean[:, 1, 1]
-    rho2_q_2 = rho2_q_mean[:, 2, 2]
-    rho2_q_3 = rho2_q_mean[:, 3, 3]
+    ## rho2_q_1 = rho2_q_mean[:, 1, 1]
+    ## rho2_q_2 = rho2_q_mean[:, 2, 2]
+    ## rho2_q_3 = rho2_q_mean[:, 3, 3]
+    ## rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
+    ## rho2_q_1[k_max + 1] = n1_diag
+    ## rho2_q_2[k_max + 1] = n2_diag
+    ## rho2_q_3[k_max + 1] = n3_diag
+    ## rho2_q_d[k_max + 1] = nd_diag
+    
+    rho2_q_11 = rho2_q_mean[:, 1, 1]
+    rho2_q_22 = rho2_q_mean[:, 2, 2]
+    rho2_q_33 = rho2_q_mean[:, 3, 3]
+    rho2_q_11[k_max + 1] = n11_diag
+    rho2_q_22[k_max + 1] = n22_diag
+    rho2_q_33[k_max + 1] = n33_diag
+    ## 1, 2; 2, 3; 3, 1 の相関用
+    rho2_q_12 = rho2_q_mean[:, 1, 2]
+    rho2_q_23 = rho2_q_mean[:, 2, 3]
+    rho2_q_31 = rho2_q_mean[:, 3, 1]
+    rho2_q_12[k_max + 1] = n12_diag
+    rho2_q_23[k_max + 1] = n23_diag
+    rho2_q_31[k_max + 1] = n31_diag
+ 
     rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
-    rho2_q_1[k_max + 1] = n1_diag
-    rho2_q_2[k_max + 1] = n2_diag
-    rho2_q_3[k_max + 1] = n3_diag
     rho2_q_d[k_max + 1] = nd_diag
     println(nd_diag)
 
@@ -236,27 +271,57 @@ function eval_space_correlation(states, outputs, w_lst, k_max, threads, n_total,
     x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
     k_list = Float32.((2 * π / L_box) .* (-k_max:k_max))
     W = exp.(-1.0f0im .* x_grid .* k_list')
-    cor1_x_vec = real.(W * rho2_q_1) ./ L_box
-    cor2_x_vec = real.(W * rho2_q_2) ./ L_box
-    cor3_x_vec = real.(W * rho2_q_3) ./ L_box
-    println(size(rho2_q_d))
-    cord_x_vec  = real.(W * rho2_q_d) ./ L_box
+    ## cor1_x_vec = real.(W * rho2_q_1) ./ L_box
+    ## cor2_x_vec = real.(W * rho2_q_2) ./ L_box
+    ## cor3_x_vec = real.(W * rho2_q_3) ./ L_box
+    ## println(size(rho2_q_d))
+    ## cord_x_vec  = real.(W * rho2_q_d) ./ L_box
+    
+    cor11_x_vec = real.(W * rho2_q_11) ./ L_box
+    cor22_x_vec = real.(W * rho2_q_22) ./ L_box
+    cor33_x_vec = real.(W * rho2_q_33) ./ L_box
 
-    @printf("n1_diag, n2_diag, n3_diag, max_correlation,\n") 
-    @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n1_diag, n2_diag, n3_diag, maximum(abs.(cor1_x_vec - cor3_x_vec)))
+    cor12_x_vec = real.(W * rho2_q_12) ./ L_box
+    cor23_x_vec = real.(W * rho2_q_23) ./ L_box
+    cor31_x_vec = real.(W * rho2_q_31) ./ L_box
 
+    cord_x_vec = real.(W * rho2_q_d) ./ L_box
+ 
+    ## @printf("n1_diag, n2_diag, n3_diag, max_correlation,\n") 
+    ## @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n1_diag, n2_diag, n3_diag, maximum(abs.(cor1_x_vec - cor3_x_vec)))
+
+    ## open(filename, "a") do io
+    ##     @printf(io, "x, <n1>, <n2>, <n3>, <nd>,\n")
+    ## end
+    ## for x in 1:1000
+    ##     cor1_x = cor1_x_vec[x]
+    ##     cor2_x = cor2_x_vec[x]
+    ##     cor3_x = cor3_x_vec[x]
+    ##     cord_x = cord_x_vec[x]
+    ##     open(filename, "a") do io
+    ##         @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, \n", x_grid[x], cor1_x, cor2_x, cor3_x, cord_x)
+    ##     end
+    ## end
+    
     open(filename, "a") do io
-        @printf(io, "x, <n1>, <n2>, <n3>, <nd>,\n")
+        @printf(io, "x, C11, C22, C33, C12, C23, C31, Cd,\n")
     end
     for x in 1:1000
-        cor1_x = cor1_x_vec[x]
-        cor2_x = cor2_x_vec[x]
-        cor3_x = cor3_x_vec[x]
+        cor11_x = cor11_x_vec[x]
+        cor22_x = cor22_x_vec[x]
+        cor33_x = cor33_x_vec[x]
+        cor12_x = cor12_x_vec[x]
+        cor23_x = cor23_x_vec[x]
+        cor31_x = cor31_x_vec[x]
         cord_x = cord_x_vec[x]
         open(filename, "a") do io
-            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, \n", x_grid[x], cor1_x, cor2_x, cor3_x, cord_x)
+            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f\n", 
+            x_grid[x], cor11_x, cor22_x, cor33_x, cor12_x, cor23_x, cor31_x, cord_x)
         end
     end
+    
+    @printf("n11_diag, n22_diag, n33_diag, max_correlation,\n") 
+    @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n11_diag, n22_diag, n33_diag, maximum(abs.(cor11_x_vec - cor33_x_vec)))
     
     return nothing
 end

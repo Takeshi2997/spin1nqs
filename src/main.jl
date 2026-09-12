@@ -240,12 +240,6 @@ function main()
             end
         end
         if epoch % save_iter == 0
-            inputs = Float32.(all_states[:, :, 1:chunk])
-            outputs = eval_complex_network(nqs_model, inputs, ps, st)
-            logw = beta .* real.(outputs)
-            logw .-= maximum(logw)
-            w = exp.(logw)
-            eval_space_correlation(all_states[:, :, 1:chunk], outputs, w, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
         end
 
@@ -271,67 +265,6 @@ function main()
     end
     
     println("=== 学習が正常に終了しました ===")
-end
-
-function eval_space_correlation(states, outputs, w, k_max, threads, n_walkers, nqs_model, ps, st, dirname, epoch)
-    filename  = dirname * "/space_correlation_epoch$(epoch).txt"
-    if isfile(filename)
-        rm(filename)
-    end
-    touch(filename)
-
-    ## 規格化定数
-    w_sum = sum(w)
-
-    ## 対角要素
-    Ns_w = dropdims(sum(states, dims=1), dims=1)
-    Ns_diag = dropdims(Array(sum(Ns_w .* (Ns_w .- Int32(1)) .* reshape(w, 1, :), dims=2) ./ w_sum), dims=2)
-    n1_diag = Float32(Ns_diag[1])
-    n2_diag = Float32(Ns_diag[2])
-    n3_diag = Float32(Ns_diag[3])
-    ## 1, 2; 2, 3; 3, 1 の相関用
-    Nss_off = Array(dropdims(sum(Ns_w .* circshift(Ns_w, 1) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
- 
-    ## 運動量空間の相関関数
-    rho2_q_loc = compute_local_correlation(states, outputs, k_max, threads, nqs_model, ps, st)
-    rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, 1, :), dims=4), dims=4) ./ w_sum)   # [n_modes, 3]
-    rho2_q_1 = rho2_q_mean[:, 1, 1]
-    rho2_q_2 = rho2_q_mean[:, 2, 2]
-    rho2_q_3 = rho2_q_mean[:, 3, 3]
-    rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
-    rho2_q_1[k_max + 1] = n1_diag
-    rho2_q_2[k_max + 1] = n2_diag
-    rho2_q_3[k_max + 1] = n3_diag
-    ## 1, 2; 2, 3; 3, 1 の相関用
-    rho2_q_mean = Array(dropdims(sum(rho2_q_loc .* reshape(w, 1, 1, :), dims=3), dims=3) ./ w_sum)   # [n_modes, 3]
- 
-    # フーリエ変換
-    L_box = Float32(2 * π)
-    x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
-    k_list = Float32.((2 * π / L_box) .* (-k_max:k_max))
-    W = exp.(-1.0f0im .* x_grid .* k_list')
-    cor1_x_vec = real.(W * rho2_q_1) ./ L_box
-    cor2_x_vec = real.(W * rho2_q_2) ./ L_box
-    cor3_x_vec = real.(W * rho2_q_3) ./ L_box
-    cord_x_vec = real.(W * rho2_q_d) ./ L_box
-
-    open(filename, "a") do io
-        @printf(io, "x, <n1>, <n2>, <n3>, <nd>,\n")
-    end
-    for x in 1:1000
-        cor1_x = cor1_x_vec[x]
-        cor2_x = cor2_x_vec[x]
-        cor3_x = cor3_x_vec[x]
-        cord_x = cord_x_vec[x]
-        open(filename, "a") do io
-            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f\n", x_grid[x], cor1_x, cor2_x, cor3_x, cord_x)
-        end
-    end
-    
-    @printf("n1_diag, n2_diag, n3_diag, max_correlation,\n") 
-    @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", n1_diag, n2_diag, n3_diag, maximum(abs.(cor1_x_vec - cor3_x_vec)))
-
-    return nothing 
 end
 
 # 実行

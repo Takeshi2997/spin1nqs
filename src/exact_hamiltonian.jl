@@ -1,16 +1,32 @@
 module Exact
 
-using ..Physics
+using SparseArrays
+using LinearAlgebra
+using KrylovKit
+using Printf
+using TOML
+using LinearAlgebra
+using CUDA
+using Random
+using ComponentArrays
+using Dates
+
+export SystemParams, enumerate_basis, build_hamiltonian
+
+struct SystemParams
+    k_max::Int
+    n_modes::Int
+    hbar2_over_2m::Float32
+    
+    # 相互作用パラメータ
+    c0::Float32
+    c1::Float32
+end
 
 # ============================================================
 # 1. Fock 基底の列挙
 #    状態は長さ N_MODES*3 の Vector{Int8} (column-major: [m, s] -> (s-1)*N_MODES + m)
 # ============================================================
-"""
-占有数ベクトル occ の (mode m, spin s) 成分へのインデックス
-"""
-@inline cell_index(m, s) = (s - 1) * N_MODES + m
-
 """
 Sz (と必要なら P) の制約を満たす Fock 基底をすべて列挙する。
 枝刈り付き DFS。
@@ -93,50 +109,6 @@ end
 # ============================================================
 # 3. ハミルトニアンの疎行列構築
 # ============================================================
-"""
-a†_{l1n,c} a†_{l2n,d} a_{l2,b} a_{l1,a} を occ に作用させる。
-戻り値: (新しい occ, 振幅) または nothing
-"""
-@inline function apply_pair!(new_occ::Vector{Int8}, occ::Vector{Int8},
-                             l1::Int, a::Int, l2::Int, b::Int,
-                             l1n::Int, c::Int, l2n::Int, d::Int)
-    copyto!(new_occ, occ)
-
-    # 消滅: a_{l1,a} を先に作用 (a_{l2,b} a_{l1,a} の順序)
-    i1 = cell_index(l1, a)
-    new_occ[i1] == 0 && return nothing
-    amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
-
-    i2 = cell_index(l2, b)
-    new_occ[i2] == 0 && return nothing
-    amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
-
-    # 生成: a†_{l2n,d} を先に
-    j2 = cell_index(l2n, d)
-    new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
-
-    j1 = cell_index(l1n, c)
-    new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
-
-    return amp
-end
-
-"""運動エネルギー Σ_l l² n_l"""
-function kinetic_energy(occ::Vector{Int8}, params::SystemParams)
-    k_max = params.k_max
-    n_modes = params.n_modes
-    hbar2_over_2m = params.hbar2_over_2m
-    E = 0.0
-    for s in 1:3, m in 1:n_modes
-        n = occ[cell_index(m, s)]
-        if n > 0
-            l = m - k_max - 1
-            E += hbar2_over_2m * Float64(l^2) * Float64(n)
-        end
-    end
-    return E
-end
-
 function build_hamiltonian(basis::Vector{Vector{Int8}},
                            index::Dict{Vector{Int8}, Int}, 
                            params::SystemParams)
@@ -149,6 +121,53 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
     k_max = params.k_max
     n_modes = params.n_modes
     hbar2_over_2m = params.hbar2_over_2m
+
+    """
+    占有数ベクトル occ の (mode m, spin s) 成分へのインデックス
+    """
+    @inline cell_index(m, s) = (s - 1) * n_modes + m
+
+
+    """運動エネルギー Σ_l l² n_l"""
+    @inline function kinetic_energy(occ::Vector{Int8})
+        E = 0.0
+        for s in 1:3, m in 1:n_modes
+            n = occ[cell_index(m, s)]
+            if n > 0
+                l = m - k_max - 1
+                E += hbar2_over_2m * Float64(l^2) * Float64(n)
+            end
+        end
+        return E
+    end
+
+    """
+    a†_{l1n,c} a†_{l2n,d} a_{l2,b} a_{l1,a} を occ に作用させる。
+    戻り値: (新しい occ, 振幅) または nothing
+    """
+    @inline function apply_pair!(new_occ::Vector{Int8}, occ::Vector{Int8},
+                                 l1::Int, a::Int, l2::Int, b::Int,
+                                 l1n::Int, c::Int, l2n::Int, d::Int)
+        copyto!(new_occ, occ)
+    
+        # 消滅: a_{l1,a} を先に作用 (a_{l2,b} a_{l1,a} の順序)
+        i1 = cell_index(l1, a)
+        new_occ[i1] == 0 && return nothing
+        amp = sqrt(Float64(new_occ[i1])); new_occ[i1] -= 1
+    
+        i2 = cell_index(l2, b)
+        new_occ[i2] == 0 && return nothing
+        amp *= sqrt(Float64(new_occ[i2])); new_occ[i2] -= 1
+    
+        # 生成: a†_{l2n,d} を先に
+        j2 = cell_index(l2n, d)
+        new_occ[j2] += 1; amp *= sqrt(Float64(new_occ[j2]))
+    
+        j1 = cell_index(l1n, c)
+        new_occ[j1] += 1; amp *= sqrt(Float64(new_occ[j1]))
+    
+        return amp
+    end
 
     # 非ゼロチャネル (a,b,c,d, coef) を事前に集める
     channels = Tuple{Int,Int,Int,Int,Float64}[]
@@ -167,7 +186,7 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
 
     for (i, occ) in enumerate(basis)
         # 対角: 運動エネルギー
-        push!(rows, i); push!(cols, i); push!(vals, kinetic_energy(occ, params))
+        push!(rows, i); push!(cols, i); push!(vals, kinetic_energy(occ))
 
         # 相互作用
         for l1 in 1:n_modes, l2 in 1:n_modes
@@ -195,7 +214,5 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
     H = sparse(rows, cols, vals, dim, dim)
     return H
 end
-
-
 
 end # module Exact
