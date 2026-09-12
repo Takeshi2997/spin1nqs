@@ -240,12 +240,12 @@ function main()
             end
         end
         if epoch % save_iter == 0
-            inputs = Float32.(all_states[:, :, 1:chunk])
-            outputs = eval_complex_network(nqs_model, inputs, ps, st)
-            logw = beta .* real.(outputs)
-            logw .-= maximum(logw)
-            w = exp.(logw)
-            eval_space_correlation(all_states[:, :, 1:chunk], outputs, w, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
+            ## inputs = Float32.(all_states[:, :, 1:chunk])
+            ## outputs = eval_complex_network(nqs_model, inputs, ps, st)
+            ## logw = beta .* real.(outputs)
+            ## logw .-= maximum(logw)
+            ## w = exp.(logw)
+            ## eval_space_correlation(all_states[:, :, 1:chunk], outputs, w, k_max, basis.threads, n_total, nqs_model, ps, st, dirname, epoch)
             save_nqs_model(dirname, epoch, ps, st)
         end
 
