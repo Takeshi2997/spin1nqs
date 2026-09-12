@@ -7,11 +7,11 @@ c1 = 0.2
 target_Mz = 0
 
 [training]
-chunk = 1024
-n_walkers = 128
+chunk = 512
+n_walkers = 64
 n_thermal = 512
 n_steps = 128
-n_interval = 16
+n_interval = 32
 n_epochs = 80000
 learning_rate = 0.01
 epsilon = 0.1
@@ -22,7 +22,7 @@ clipping_threshold = 10.0
 beta = 0.9
 
 [estimate]
-chunk = 2048
+chunk = 512
 n_walkers = 128
 n_thermal = 1024
 n_steps = 2048
@@ -30,7 +30,7 @@ n_interval = 128
 beta = 0.9
 
 [model]
-hidden_dim = 64
+hidden_dim = 128
 
 [io]
 log_iter = 10
