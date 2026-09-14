@@ -1,7 +1,7 @@
 export JULIA_CUDA_MEMORY_POOL:=none
 
 main:
-	julia ./src/main.jl ./params/config_server.toml
+	CUDA_VISIBLE_DEVICES=1 julia ./src/main.jl ./params/config_server.toml
 
 clean:
 	rm -f *.txt *.png *.dat nohup.out

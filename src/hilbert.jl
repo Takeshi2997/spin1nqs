@@ -67,7 +67,8 @@ end
 - proposed_states: 提案状態を書き込むための配列（同じサイズ）
 - k_max: カットオフ波数
 """
-function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{Int32, 3}, h_factor::CuArray{Float32, 1}, k_max::Int, n_particles::Int, threads::Int)
+function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{Int32, 3}, h_factor::CuArray{Float32, 1},
+    k_max::Int, n_particles::Int, p_spin::Float32, threads::Int)
     n_walkers = size(states, 3)
     
     # 各ウォーカーに対して4つの乱数を用意する
@@ -77,7 +78,7 @@ function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{
     
     blocks = ceil(Int, n_walkers / threads)
     @cuda threads=threads blocks=blocks _proposal_kernel!(
-        states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles
+        states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles, p_spin
     )
     ## _proposal_kernel!(
     ##     states, proposed_states, h_factor, rand_vals, k_max
@@ -89,7 +90,7 @@ end
 """
 各ウォーカーごとに独立して1つのランダムな2体散乱を提案するカーネル
 """
-function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles)
+function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_vals, k_max, n_particles, p_spin = 0.5f0)
     # ウォーカーのインデックスを指定
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     n_modes = 2 * k_max + 1
@@ -145,7 +146,15 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
         end
 
         # 4. 散乱後の波数を計算
-        q = floor(Int, rand_vals[4, w] * n_modes) - k_max - 1
+        r = rand_vals[4, w]
+        if r < p_spin
+            q = Int32(0)                                   # 純スピン交換モード (運動量不変)
+        else
+            u = (r - p_spin) / (1.0f0 - p_spin)            # [0,1] に再スケール
+            j = min(trunc(Int32, u * (2 * k_max)), Int32(2 * k_max - 1)) # 0 .. 2*k_max-1  (r=1.0 のフォールスルー防止)
+            q = j < k_max ? Int32(j - k_max) : Int32(j - k_max + 1)    # {-k_max..-1} ∪ {+1..+k_max}、0 を飛ばす
+        end
+        ## q = floor(Int, rand_vals[4, w] * n_modes) - k_max - 1
         k1 = m1 - k_max - 1
         k2 = m2 - k_max - 1
         k1_new = k1 + q

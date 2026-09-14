@@ -83,6 +83,7 @@ function main()
     lambda_min = Float32(train_config["lambda_min"])
     clipping_threshold = Float32(train_config["clipping_threshold"])
     beta = Float32(train_config["beta"])
+    p_spin = Float32(train_config["p_spin"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -136,7 +137,7 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for step in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
     end
     println("熱平衡化が完了しました。")
 
@@ -152,7 +153,7 @@ function main()
         for step in 1:n_steps
             for _ in 1:n_interval
                 # マルコフ連鎖を1ステップ進める
-                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
+                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
             end
             
             all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states

@@ -13,10 +13,10 @@ using StatsBase
 
 # 自作モジュールの読み込み
 include("../src/hilbert.jl")
-include("../tests/ed_from_kernel.jl")
+## include("../tests/ed_from_kernel.jl")
+include("../src/model.jl")
 include("../src/sampler.jl")
 include("../src/physics.jl")
-include("../src/model.jl")
 
 using .Hilbert
 using .Model
@@ -24,18 +24,18 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "20260911"
-    srcdir = "./data_server/" * srcday
-    epoch = 9000
-    filename = "nqs_model_2306_epoch" * string(epoch) * ".jld2"
+    srcday = "20260912"
+    srcdir = "./data/" * srcday
+    epoch = 20000
+    filename = "/nqs_model_4610_epoch" * string(epoch) * ".jld2"
 
-    dirname = "./data/" * srcday * "_estimated/"
+    dirname = "./data/" * srcday * "_estimated"
     if !isdir(dirname)
         mkpath(dirname)
     end
     
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
+    config_path = srcdir * "/config.toml"
     println("🔧 Loading configuration from: ", config_path)
     
     # 2. TOMLファイルのパース
@@ -57,7 +57,8 @@ function main()
     n_steps = estimate_config["n_steps"]
     n_thermal = estimate_config["n_thermal"]
     n_interval = estimate_config["n_interval"]
-    beta = estimate_config["beta"]
+    beta = Float32(estimate_config["beta"])
+    p_spin = Float32(estimate_config["p_spin"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -87,6 +88,7 @@ function main()
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     cp(srcdir * filename, dirname * filename, force=true)
+    cp(srcdir * "/config.toml", dirname * "/config.toml", force=true)
     ps_cpu, st_cpu = load_nqs_model(dirname * filename)
 
     filename  = dirname * "/data_log_epoch" * string(epoch) * ".txt"
@@ -104,7 +106,7 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for step in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
     end
     println("熱平衡化が完了しました。")
 
@@ -119,7 +121,7 @@ function main()
         for _ in 1:n_interval
             # マルコフ連鎖を1ステップ進める
             n_accepted = CUDA.zeros(Float32, basis.n_walkers)
-            sample_step!(sampler, basis, n_accepted, nqs_model, k_max, n_particles, ps, st, beta)
+            sample_step!(sampler, basis, n_accepted, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
             acc_rate += sum(n_accepted) / basis.n_walkers
         end
         
@@ -187,14 +189,14 @@ function main()
     # 相関関数の評価
     inputs = Float32.(all_states)
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
-    eval_space_correlation(all_states, outputs, w_lst, k_max, basis.threads, n_total, chunk, nqs_model, ps, st, dirname)
+    eval_space_correlation(all_states, outputs, w_lst, k_max, basis.threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
 
     println("=== 計算が終了しました ===")
     close(io)
 end
 
-function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname)
-    filename  = dirname * "space_correlation.txt"
+function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
+    filename  = dirname * "/space_correlation" * "_epoch" * string(epoch) * ".txt"
     if isfile(filename)
         rm(filename)
     end
@@ -220,7 +222,7 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chu
     n22_diag = Float32(Ns_diag[2])
     n33_diag = Float32(Ns_diag[3])
     ## 1, 2; 2, 3; 3, 1 の相関用
-    Nss_off = Array(dropdims(sum(Ns_w .* circshift(Ns_w, 1) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
+    Nss_off = dropdims(Array(sum(Ns_w .* circshift(Ns_w, 2) .* reshape(w, 1, :), dims=2) ./ w_sum), dims=2)
     n12_diag = Float32(Nss_off[1])
     n23_diag = Float32(Nss_off[2])
     n31_diag = Float32(Nss_off[3])
@@ -261,6 +263,7 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chu
     rho2_q_12[k_max + 1] = n12_diag
     rho2_q_23[k_max + 1] = n23_diag
     rho2_q_31[k_max + 1] = n31_diag
+    println(n31_diag)
  
     rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
     rho2_q_d[k_max + 1] = nd_diag

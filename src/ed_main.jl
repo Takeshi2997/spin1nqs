@@ -14,13 +14,12 @@ using .Exact
 
 function main()
     @printf("=== スピン1ボソン 厳密対角化 ===\n")
-
-    k_max = 1
+    k_max = 4
     n_modes = 2 * k_max + 1
-    n_particles = 6
+    n_particles = 10
     hbar2_over_2m = 1.0
     c0 = 0.0
-    c1 = 0.2
+    c1 = 0.8 / n_particles
     target_Mz = 0
     constrain_P = true
     
@@ -33,6 +32,14 @@ function main()
         c1   # c1 (スピン交換相互作用)
     )
 
+    dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_exact"
+    mkpath(dirname)
+    filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1)).txt"
+
+    open(filename, "w") do io
+        @printf(io, "k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
+    end
+    
     @printf("k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
     @printf("c0 = %.3e, c1 = %.3e, hbar2/2m = %.3f\n", c0, c1, hbar2_over_2m)
 
@@ -138,7 +145,98 @@ function main()
     n_off = n_particles - n_off
     @printf("\n<N_off> = %.6f\n", n_off)
 
+    eval_space_correlation(gs, basis, index, k_max, filename)
+
     return vals[1]
+end
+
+function eval_space_correlation(gs::Vector{Float64}, basis, index, k_max, filename)
+    touch(filename)
+
+    n_modes = 2k_max + 1
+    q_range = -2k_max : 2k_max
+    rho2_q = zeros(ComplexF64, length(q_range), 3, 3)
+    cell(m, s) = (s - 1) * n_modes + m
+    occ = zeros(Int8, n_modes * 3)
+
+    for (j, occ_j) in enumerate(basis)
+        cj = gs[j]
+        abs(cj) < 1e-14 && continue
+
+        for s1 in 1:3, s2 in 1:3, (qi, q) in enumerate(q_range)
+            for m1 in 1:n_modes, m2 in 1:n_modes
+                m1n = m1 + q;  m2n = m2 - q
+                (1 <= m1n <= n_modes && 1 <= m2n <= n_modes) || continue
+
+                copyto!(occ, occ_j)
+                # 消滅: (m1,s1) → (m2,s2)  [順序に注意]
+                i1 = cell(m1, s1)
+                occ[i1] == 0 && continue
+                amp = sqrt(Float64(occ[i1])); occ[i1] -= 1
+                i2 = cell(m2, s2)
+                occ[i2] == 0 && continue
+                amp *= sqrt(Float64(occ[i2])); occ[i2] -= 1
+                # 生成: (m2n,s2) → (m1n,s1)
+                j2 = cell(m2n, s2); occ[j2] += 1; amp *= sqrt(Float64(occ[j2]))
+                j1 = cell(m1n, s1); occ[j1] += 1; amp *= sqrt(Float64(occ[j1]))
+
+                i = get(index, occ, 0)
+                i == 0 && continue
+                rho2_q[qi, s1, s2] += conj(gs[i]) * cj * amp
+            end
+        end
+    end
+   
+    total = sum(real.(rho2_q[2 * k_max + 1, :, :]))
+    @printf("Σ_ss' ρ₂(0) = %.10f \n", total)
+
+    rho2_q_11 = rho2_q[:, 1, 1]
+    rho2_q_22 = rho2_q[:, 2, 2]
+    rho2_q_33 = rho2_q[:, 3, 3]
+    ## 1, 2; 2, 3; 3, 1 の相関用
+    rho2_q_12 = rho2_q[:, 1, 2]
+    rho2_q_23 = rho2_q[:, 2, 3]
+    rho2_q_31 = rho2_q[:, 3, 1]
+ 
+
+    # フーリエ変換
+    L_box = Float32(2 * π)
+    x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
+    k_list = Float32.((2 * π / L_box) .* q_range)
+    W = exp.(-1.0f0im .* x_grid .* k_list')
+
+    cor11_x_vec = real.(W * rho2_q_11) ./ L_box
+    cor22_x_vec = real.(W * rho2_q_22) ./ L_box
+    cor33_x_vec = real.(W * rho2_q_33) ./ L_box
+
+    cor12_x_vec = real.(W * rho2_q_12) ./ L_box
+    cor23_x_vec = real.(W * rho2_q_23) ./ L_box
+    cor31_x_vec = real.(W * rho2_q_31) ./ L_box
+
+    rho2_total = dropdims(sum(rho2_q, dims=(2,3)), dims=(2,3))   # [n_q]
+    cord_x_vec = real.([sum(exp(im*q*x) * rho2_total[qi] for (qi,q) in enumerate(q_range))/(2π) for x in x_grid])
+ 
+    open(filename, "a") do io
+        @printf(io, "x, C11, C22, C33, C12, C23, C31, Cd,\n")
+    end
+    for x in 1:1000
+        cor11_x = cor11_x_vec[x]
+        cor22_x = cor22_x_vec[x]
+        cor33_x = cor33_x_vec[x]
+        cor12_x = cor12_x_vec[x]
+        cor23_x = cor23_x_vec[x]
+        cor31_x = cor31_x_vec[x]
+        cord_x = cord_x_vec[x]
+        open(filename, "a") do io
+            @printf(io, "%6.3f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f, %6.9f\n", 
+            x_grid[x], cor11_x, cor22_x, cor33_x, cor12_x, cor23_x, cor31_x, cord_x)
+        end
+    end
+    
+    @printf("n11_diag, n22_diag, n33_diag, max_correlation,\n") 
+    @printf("%6.3f, %6.3f, %6.3f, %6.3f, \n", rho2_q_11[k_max + 1], rho2_q_22[k_max + 1], rho2_q_33[k_max + 1], maximum(abs.(cor11_x_vec - cor33_x_vec)))
+    
+    return nothing
 end
 
 main()

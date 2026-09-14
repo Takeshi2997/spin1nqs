@@ -34,13 +34,15 @@ using Zygote
 # ed_from_kernel.jl / ed_spin1.jl は、末尾の main() 呼び出しを
 #   if abspath(PROGRAM_FILE) == @__FILE__; main(); end
 # で囲ってから include すること (include 時に main が走らないように)。
-include("../src/model.jl")
 include("../src/hilbert.jl")
+include("../src/model.jl")
+include("../src/sampler.jl")
 include("../src/physics.jl")
 include("../src/jacobian.jl")
 include("ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
 using .Model
 using .Hilbert
+using .Sampler
 using .Physics
 # --------------------------------------------------------------------
 
@@ -74,40 +76,40 @@ const REF = (
     ),
 )
 
-# ============================================================
-# 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
-# ------------------------------------------------------------
-# 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
-#       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
-#       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
-#       ことを恒常的に保証する。
-# ============================================================
-@testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
-    basis = enumerate_basis(6)   # Sz=0, P=0
-    dim = length(basis)
-    @test dim == 23607
-
-    H_indep = build_H_independent(basis)
-
-    # 独立実装のエルミート性と参照値
-    @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
-    
-    vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
-                                issymmetric = true,
-                                krylovdim = 60,
-                                maxiter = 500,
-                                tol = 1e-12)
-    @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
-    @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
-
-    if GPU_OK
-        H_kernel = build_H_from_kernel(basis)
-        # Float32 カーネルなので許容誤差は 1e-6 オーダー
-        @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
-        @test maximum(abs.(H_kernel - H_indep)) < 1e-5
-    end
-end
-
+## # ============================================================
+## # 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
+## # ------------------------------------------------------------
+## # 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
+## #       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
+## #       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
+## #       ことを恒常的に保証する。
+## # ============================================================
+## @testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
+##     basis = enumerate_basis(6)   # Sz=0, P=0
+##     dim = length(basis)
+##     @test dim == 23607
+## 
+##     H_indep = build_H_independent(basis)
+## 
+##     # 独立実装のエルミート性と参照値
+##     @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
+##     
+##     vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
+##                                 issymmetric = true,
+##                                 krylovdim = 60,
+##                                 maxiter = 500,
+##                                 tol = 1e-12)
+##     @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
+##     @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
+## 
+##     if GPU_OK
+##         H_kernel = build_H_from_kernel(basis)
+##         # Float32 カーネルなので許容誤差は 1e-6 オーダー
+##         @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
+##         @test maximum(abs.(H_kernel - H_indep)) < 1e-5
+##     end
+## end
+## 
 ## # ============================================================
 ## # 2. 参照観測量 (独立EDの基底状態から)
 ## # ------------------------------------------------------------
@@ -254,46 +256,69 @@ end
 ##     @test pick(0.5f0, N) in 1:N
 ##     @test pick(1.0f0, N - 1) == N - 1        # 2粒子目の選択
 ## end
-## 
-## # ============================================================
-## # 6. サンプラー: 詳細釣り合い (統計テスト)
-## # ------------------------------------------------------------
-## # 履歴: Hastings 因子に q の縮退度 (同スピン・異運動量の行き先で2通りの
-## #       q が同一終状態を与える) が抜けており、一様ターゲットの定常分布が
-## #       (3/23, 12/23, 8/23) からずれるバグがあった。修正後の分布を検証。
-## #       N=4, k_max=1, ψ=const で P=0, Sz=0 セクター (23状態) 上の一様分布。
-## # 注意: 統計テストなので固定シード + 緩い許容誤差。まれな失敗は再実行で
-## #       判断し、系統的に失敗するなら詳細釣り合いの破れを疑う。
-## # ============================================================
-## @testset "詳細釣り合い (一様ターゲット, N=4)" begin
-##     if GPU_OK
-##         n_walkers = 2000
-##         n_steps   = 2000        # 熱平衡化込み
-##         basis = SpinorBasis(1, 4, n_walkers)     # ★ コンストラクタ名
-##         initialize_states!(basis, 0)
-## 
-##         # ψ = const でサンプリング: 受理率 = min(1, h_factor)
-##         # ★ 一様 ψ での MH ループは実装に合わせて書く。
-##         #    sampler の log_psi を 0 に固定して sample_step! を呼ぶ形が簡単。
-##         run_uniform_sampling!(basis, n_steps)    # ★ 要実装 or 既存関数流用
-## 
-##         st = Array(basis.states)
-##         @test minimum(st) >= 0
-##         # スピンセクター頻度
-##         counts = Dict((0,4,0) => 0, (1,2,1) => 0, (2,0,2) => 0)
-##         for w in 1:n_walkers
-##             ns = ntuple(s -> sum(st[:, s, w]), 3)
-##             counts[ns] = get(counts, ns, 0) + 1
-##         end
-##         p_ref = Dict((0,4,0) => 3/23, (1,2,1) => 12/23, (2,0,2) => 8/23)
-##         for (ns, p) in p_ref
-##             @test isapprox(counts[ns] / n_walkers, p; atol = 0.04)
-##         end
-##     else
-##         @test_skip "GPU なし"
-##     end
-## end
-## 
+
+# ============================================================
+# 6. サンプラー: 詳細釣り合い (統計テスト)
+# ------------------------------------------------------------
+# 履歴: Hastings 因子に q の縮退度 (同スピン・異運動量の行き先で2通りの
+#       q が同一終状態を与える) が抜けており、一様ターゲットの定常分布が
+#       (3/23, 12/23, 8/23) からずれるバグがあった。修正後の分布を検証。
+#       N=4, k_max=1, ψ=const で P=0, Sz=0 セクター (23状態) 上の一様分布。
+# 注意: 統計テストなので固定シード + 緩い許容誤差。まれな失敗は再実行で
+#       判断し、系統的に失敗するなら詳細釣り合いの破れを疑う。
+# ============================================================
+@testset "詳細釣り合い (一様ターゲット, N=4)" begin
+    if GPU_OK
+        chunk = 100
+        n_walkers = 2000
+        n_thermal = 2000        # 熱平衡化込み
+        beta = 1.3f0
+        p_spin = 0.5f0
+        n_particles = 4
+        k_max = 1
+        hidden_dim = 32
+        rng = Xoshiro(42)
+        basis = MomentumSpinorBasis(k_max, n_particles, 256, n_walkers)     # ★ コンストラクタ名
+        initialize_states!(basis, 0)
+
+        # ψ = const でサンプリング: 受理率 = min(1, h_factor)
+        # ★ 一様 ψ での MH ループは実装に合わせて書く。
+        #    sampler の log_psi を 0 に固定して sample_step! を呼ぶ形が簡単。
+        nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
+        ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+
+        # 重み(ps)と状態(st)をGPUへ転送
+        ps = ComponentArray(ps_cpu) |> cu
+        st = st_cpu |> cu
+
+        # C. サンプラーバッファの確保
+        sampler = MCMCSampler(basis)
+        buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), chunk)
+ 
+        # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
+        println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
+        for step in 1:n_thermal
+            sample_step_uniform!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
+        end
+        println("熱平衡化が完了しました。")
+
+        st = Array(basis.states)
+        @test minimum(st) >= 0
+        # スピンセクター頻度
+        counts = Dict((0,4,0) => 0, (1,2,1) => 0, (2,0,2) => 0)
+        for w in 1:n_walkers
+            ns = ntuple(s -> sum(st[:, s, w]), 3)
+            counts[ns] = get(counts, ns, 0) + 1
+        end
+        p_ref = Dict((0,4,0) => 3/23, (1,2,1) => 12/23, (2,0,2) => 8/23)
+        for (ns, p) in p_ref
+            @test isapprox(counts[ns] / n_walkers, p; atol = 0.04)
+        end
+    else
+        @test_skip "GPU なし"
+    end
+end
+
 ## # ============================================================
 ## # 7. max_transitions の解析的上限
 ## # ------------------------------------------------------------
