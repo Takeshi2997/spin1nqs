@@ -14,12 +14,12 @@ using .Exact
 
 function main()
     @printf("=== スピン1ボソン 厳密対角化 ===\n")
-    k_max = 4
+    k_max = 5
     n_modes = 2 * k_max + 1
-    n_particles = 10
+    n_particles = 8
     hbar2_over_2m = 1.0
     c0 = 0.0
-    c1 = 8.0
+    c1 = 2.0
     target_Mz = 0
     constrain_P = true
     
