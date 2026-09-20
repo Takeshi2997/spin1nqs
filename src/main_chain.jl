@@ -8,6 +8,9 @@ using Zygote
 using ComponentArrays
 using Printf
 using Dates
+using ArgParse
+using Functors
+using JLD2
 
 include("model.jl")
 include("optimise.jl")
@@ -57,8 +60,48 @@ function create_unique_dir(base_name::String)
     end
 end
 
+function parse_commandline()
+    # 設定オブジェクトを作成
+    s = ArgParseSettings()
+
+    # 受け付ける引数の定義
+    @add_arg_table! s begin
+        "--params"
+            help = "パラメータファイル名"
+            arg_type = String
+            default = "config_local.toml"
+        "--k_max"
+            help = "カットオフモード数"
+            arg_type = Int
+            default = 5
+        "--n"
+            help = "粒子数"
+            arg_type = Int
+            default = 8
+        "--c1"
+            help = "相互作用係数"
+            arg_type = Float32
+            default = 2.0
+        "--n_epoch"
+            help = "エポック数"
+            arg_type = Int
+            default = 10000
+        "--init"
+            help = "初期化ファイル名"
+            arg_type = String
+            default = ""
+        "--out"
+            help = "出力ディレクトリ名"
+            arg_type = String
+            default = "none"
+    end
+
+    # 実際のコマンドライン引数(ARGS)を解析して辞書(Dict)で返す
+    return parse_args(s)
+end
+
 function main()
-    dirname = "./data/" * Dates.format(now(), "yyyymmdd")
+    dirname = "./data/" * "n_scan_c1_const" ## Dates.format(now(), "yyyymmdd")
     dirname = create_unique_dir(dirname)
     filename  = dirname * "/data.txt"
 
@@ -73,20 +116,24 @@ function main()
     end
  
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
-    cp(config_path, dirname * "/config.toml"; force=true)
+    args = parse_commandline()
+
+    config_path = args["params"]
     println("🔧 Loading configuration from: ", config_path)
-    
+     
     # 2. TOMLファイルのパース
     config = TOML.parsefile(config_path)
 
     # システム設定の読み込み
     sys_config = config["system"]
-    k_max = sys_config["k_max"]
-    n_particles = sys_config["n_particles"]
+    k_max = args["k_max"]
+    config["system"]["k_max"] = k_max
+    n_particles = args["n"]
+    config["system"]["n_particles"] = n_particles
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
-    c1 = Float32(sys_config["c1"])
+    c1 = args["c1"]
+    config["system"]["c1"] = c1
     target_Mz = sys_config["target_Mz"]
 
     # 学習設定の読み込み
@@ -96,7 +143,8 @@ function main()
     n_thermal = train_config["n_thermal"]
     n_steps = train_config["n_steps"]
     n_interval = train_config["n_interval"]
-    n_epochs = train_config["n_epochs"]
+    n_epochs = args["n_epoch"]
+    config["training"]["n_epochs"] = n_epochs
     learning_rate = Float32(train_config["learning_rate"])
     epsilon = Float32(train_config["epsilon"])
     epsilon2 = Float32(train_config["epsilon2"])
@@ -116,6 +164,10 @@ function main()
     log_iter = io_config["log_iter"]
     save_iter = io_config["save_iter"]
 
+    open(dirname * "/config.toml", "w") do io
+        TOML.print(io, config, sorted=true)
+    end
+   
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
         k_max,
@@ -138,18 +190,22 @@ function main()
 
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
-    ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    initfilename = args["init"]
+    if initfilename == "fresh" || isfile(initfilename) == false
+        ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+    else
+        ps_cpu, st_cpu = load_nqs_model(initfilename)
+        rm(initfilename)
+    end
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260920_n16_estimated/nqs_model_4610_epoch2000.jld2")
-    ## e_start = 1
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
     ps = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
 
-    rule = Optimisers.Adam()
-    opt_state = Optimisers.setup(rule, ps)
+    ## rule = Optimisers.Adam()
+    ## opt_state = Optimisers.setup(rule, ps)
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
@@ -289,6 +345,13 @@ function main()
         ## display(prof)
     end
     
+    ps_cpu = fmap(Array, ps)
+    st_cpu = fmap(Array, st)
+    filename = args["out"]
+    if filename !== "none"
+        @save filename ps_cpu st_cpu
+    end
+
     println("=== 学習が正常に終了しました ===")
 end
 

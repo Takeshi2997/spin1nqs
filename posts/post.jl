@@ -24,9 +24,9 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "20260912"
+    srcday = "20260920"
     srcdir = "./data/" * srcday
-    epoch = 20000
+    epoch = 2000
     filename = "/nqs_model_4610_epoch" * string(epoch) * ".jld2"
 
     dirname = "./data/" * srcday * "_estimated"
@@ -89,9 +89,10 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     cp(srcdir * filename, dirname * filename, force=true)
     cp(srcdir * "/config.toml", dirname * "/config.toml", force=true)
+    cp(srcdir * "/data.txt", dirname * "/data.txt", force=true)
     ps_cpu, st_cpu = load_nqs_model(dirname * filename)
 
-    filename  = dirname * "/data_log_epoch" * string(epoch) * ".txt"
+    filename  = dirname * "/log_epoch" * string(epoch) * ".txt"
     io = open(filename, "w")
    
 

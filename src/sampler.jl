@@ -35,7 +35,6 @@ end
 全ウォーカーを並列に1ステップ進める関数
 """
 function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st, beta, p_spin)
-    
     # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
     Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, p_spin, basis.threads)

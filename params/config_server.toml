@@ -1,6 +1,6 @@
 [system]
 k_max = 5
-n_particles = 24
+n_particles = 8
 hbar2_over_2m = 1.0
 c0 = 0.0
 c1 = 2.0
@@ -12,15 +12,15 @@ n_walkers = 64
 n_thermal = 512
 n_steps = 128
 n_interval = 32
-n_epochs = 80000
+n_epochs = 10000
 learning_rate = 0.01
 epsilon = 0.1
-epsilon2 = 0.1
-decay = 0.999
+epsilon2 = 0.001
+decay = 0.997
 lambda_min = 0.000001
 clipping_threshold = 10.0
-beta = 1.3
-p_spin = 0.5
+beta = 0.7
+p_spin = 0.3
 
 [estimate]
 chunk = 512
@@ -28,8 +28,8 @@ n_walkers = 128
 n_thermal = 1024
 n_steps = 2048
 n_interval = 128
-beta = 1.3
-p_spin = 0.5
+beta = 0.7
+p_spin = 0.3
 
 [model]
 hidden_dim = 128

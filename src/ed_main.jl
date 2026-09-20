@@ -19,7 +19,7 @@ function main()
     n_particles = 10
     hbar2_over_2m = 1.0
     c0 = 0.0
-    c1 = 0.8 / n_particles
+    c1 = 8.0
     target_Mz = 0
     constrain_P = true
     
@@ -35,20 +35,23 @@ function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_exact"
     mkpath(dirname)
     filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1)).txt"
+    logfilename = dirname * "/log_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1)).txt"
 
     open(filename, "w") do io
         @printf(io, "k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
     end
+
+    f = open(logfilename, "w")
     
-    @printf("k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
-    @printf("c0 = %.3e, c1 = %.3e, hbar2/2m = %.3f\n", c0, c1, hbar2_over_2m)
+    @printf(f, "k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
+    @printf(f, "c0 = %.3e, c1 = %.3e, hbar2/2m = %.3f\n", c0, c1, hbar2_over_2m)
 
     print("基底を列挙中... "); flush(stdout)
     t0 = time()
     basis = enumerate_basis(n_particles, n_modes, k_max, target_Mz, constrain_P)
     dim = length(basis)
     @printf("完了 (%.1f 秒)\n", time() - t0)
-    @printf("セクター次元: %d\n\n", dim)
+    @printf(f, "セクター次元: %d\n\n", dim)
 
     print("インデックス辞書を構築中... "); flush(stdout)
     t0 = time()
@@ -81,9 +84,9 @@ function main()
     @printf("完了 (%.1f 秒, 収束: %s)\n\n", time() - t0,
             info.converged >= 2 ? "OK" : "不十分")
 
-    @printf("基底エネルギー   E0 = %.10f\n", vals[1])
+    @printf(f, "基底エネルギー   E0 = %.10f\n", vals[1])
     if length(vals) >= 2
-        @printf("第1励起          E1 = %.10f  (gap = %.6f)\n", vals[2], vals[2] - vals[1])
+        @printf(f, "第1励起          E1 = %.10f  (gap = %.6f)\n", vals[2], vals[2] - vals[1])
     end
 
     # ----- 基底状態の解析 -----
@@ -100,11 +103,11 @@ function main()
             end
             p_weight[p] = get(p_weight, p, 0.0) + abs2(gs[i])
         end
-        @printf("\n基底状態の全運動量 P の分布:\n")
+        @printf(f, "\n基底状態の全運動量 P の分布:\n")
         for p in sort(collect(keys(p_weight)))
             w = p_weight[p]
             if w > 1e-8
-                @printf("  P = %+d : %.6f\n", p, w)
+                @printf(f, "  P = %+d : %.6f\n", p, w)
             end
         end
     end
@@ -116,9 +119,9 @@ function main()
         ns = ntuple(s -> sum(Int(occ[cell_index(m, s)]) for m in 1:n_modes), 3)
         sec[ns] = get(sec, ns, 0.0) + abs2(gs[i])
     end
-    @printf("\n基底状態の (N₋₁, N₀, N₊₁) 分布 (上位10件):\n")
+    @printf(f, "\n基底状態の (N₋₁, N₀, N₊₁) 分布 (上位10件):\n")
     for (ns, w) in first(sort(collect(sec), by = x -> -x[2]), 10)
-        w > 1e-6 && @printf("  %s : %.6f\n", ns, w)
+        w > 1e-6 && @printf(f, "  %s : %.6f\n", ns, w)
     end
 
     # <N_s>, <N_s(N_s-1)>  (rho2(q=0) の検証用)
@@ -131,8 +134,8 @@ function main()
             Ns_diag[s] += w * Ns * (Ns - 1)
         end
     end
-    @printf("\n<N_s>        = [%.6f, %.6f, %.6f]\n", Ns_mean...)
-    @printf("<N_s(N_s-1)> = [%.6f, %.6f, %.6f]  (ρ₂(q=0) の理論値)\n", Ns_diag...)
+    @printf(f, "\n<N_s>        = [%.6f, %.6f, %.6f]\n", Ns_mean...)
+    @printf(f, "<N_s(N_s-1)> = [%.6f, %.6f, %.6f]  (ρ₂(q=0) の理論値)\n", Ns_diag...)
 
     # <N_s>, <N_s(N_s-1)>  (rho2(q=0) の検証用)
     n_off = 0
@@ -143,7 +146,9 @@ function main()
         end
     end
     n_off = n_particles - n_off
-    @printf("\n<N_off> = %.6f\n", n_off)
+    @printf(f, "\n<N_off> = %.6f\n", n_off)
+
+    close(f)
 
     eval_space_correlation(gs, basis, index, k_max, filename)
 
