@@ -140,8 +140,8 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260920_n16_estimated/nqs_model_4610_epoch2000.jld2")
-    ## e_start = 1
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260921_1/nqs_model_4610_epoch7000.jld2")
+    ## e_start = 7001
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送

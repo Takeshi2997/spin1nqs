@@ -147,14 +147,16 @@ function _proposal_kernel!(states, proposed_states, tmp_states, h_factor, rand_v
 
         # 4. 散乱後の波数を計算
         r = rand_vals[4, w]
-        if r < p_spin
+        q = Int32(0)
+        if p_spin <= 0.0f0
+            q = floor(Int, r * n_modes) - k_max - 1
+        elseif r < p_spin
             q = Int32(0)                                   # 純スピン交換モード (運動量不変)
         else
             u = (r - p_spin) / (1.0f0 - p_spin)            # [0,1] に再スケール
             j = min(trunc(Int32, u * (2 * k_max)), Int32(2 * k_max - 1)) # 0 .. 2*k_max-1  (r=1.0 のフォールスルー防止)
             q = j < k_max ? Int32(j - k_max) : Int32(j - k_max + 1)    # {-k_max..-1} ∪ {+1..+k_max}、0 を飛ばす
         end
-        ## q = floor(Int, rand_vals[4, w] * n_modes) - k_max - 1
         k1 = m1 - k_max - 1
         k2 = m2 - k_max - 1
         k1_new = k1 + q

@@ -19,7 +19,7 @@ function main()
     n_particles = 8
     hbar2_over_2m = 1.0
     c0 = 0.0
-    c1 = 2.0
+    c1 = 1.0
     target_Mz = 0
     constrain_P = true
     

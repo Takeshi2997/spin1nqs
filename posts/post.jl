@@ -24,10 +24,10 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "n_scan_c1_const"
+    srcday = "20260922"
     srcdir = "./data/" * srcday
     epoch = 12000
-    filename = "/nqs_model_4610_epoch" * string(epoch) * ".jld2"
+    filename = "/nqs_model_9218_epoch" * string(epoch) * ".jld2"
 
     dirname = "./data/" * srcday * "_estimated"
     if !isdir(dirname)
