@@ -13,6 +13,7 @@ export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlat
 struct SystemParams
     k_max::Int
     n_modes::Int
+    L_box::Float32
     hbar2_over_2m::Float32
     
     # 相互作用パラメータ
@@ -43,8 +44,9 @@ end
 """
 function _compute_kinetic(states::CuArray{Int32, 3}, params::SystemParams)
     # 波数ベクトル k = [-k_max, ..., k_max] を作成し、二乗する
+    L_box = params.L_box
     k_vec = CuArray(Float32.(-params.k_max:params.k_max))
-    k2_vec = k_vec .^ 2 # サイズ: [n_modes]
+    k2_vec = (k_vec .* 2 .* π ./ L_box) .^ 2 # サイズ: [n_modes]
     
     # statesの形状 [n_modes, 3, n_walkers] に対して、各モードの粒子数とk^2を掛けて足し合わせる
     # sum(..., dims=(1,2)) でモードとスピン成分について和をとる
@@ -83,6 +85,7 @@ function compute_local_energy(
         proposed_states, 
         matrix_elements, 
         params.k_max,
+        params.L_box,
         params.c0,
         params.c1
     )
@@ -125,7 +128,7 @@ function _scattering_kernel!(
     states,             # [n_modes, 3, n_walkers] 現在の状態
     proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
     matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
-    k_max::Int, c0::Float32, c1::Float32
+    k_max::Int, L_box::Float32, c0::Float32, c1::Float32
 )
     n_modes = 2 * k_max + 1
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
@@ -134,8 +137,8 @@ function _scattering_kernel!(
         transition_idx = 1
         
         # 定数部分
-        v0 = c0 / Float32(2 * π)
-        v1 = c1 / Float32(2 * π)
+        v0 = c0 / L_box
+        v1 = c1 / L_box
 
         # 散乱する2粒子のモードを選択
         for m1 in 1:n_modes, s1 in 1:3

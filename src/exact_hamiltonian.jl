@@ -16,6 +16,7 @@ export SystemParams, enumerate_basis, build_hamiltonian
 struct SystemParams
     k_max::Int
     n_modes::Int
+    L_box::Float32
     hbar2_over_2m::Float32
     
     # 相互作用パラメータ
@@ -31,13 +32,13 @@ end
 Sz (と必要なら P) の制約を満たす Fock 基底をすべて列挙する。
 枝刈り付き DFS。
 """
-function enumerate_basis(n_part::Int, n_modes::Int, k_max::Int, target_sz::Int, constrain_p::Bool)
+function enumerate_basis(n_part::Int, n_modes::Int, k_max::Int, target_sz::Int, target_p::Int, constrain_p::Bool)
     n_cells = n_modes * 3
     # cells[i] = (m, s)
     cells = [(m, s) for s in 1:3 for m in 1:n_modes]
 
-    basis = Vector{Vector{Int8}}()
-    occ   = zeros(Int8, n_cells)
+    basis = Vector{Vector{UInt128}}()
+    occ   = zeros(UInt128, n_cells)
 
     function rec(i::Int, rest::Int, sz::Int, p::Int)
         if i > n_cells
@@ -66,7 +67,7 @@ function enumerate_basis(n_part::Int, n_modes::Int, k_max::Int, target_sz::Int, 
         occ[i] = 0
     end
 
-    rec(1, n_part, 0, 0)
+    rec(1, n_part, 0, target_p)
     return basis
 end
 
@@ -109,15 +110,18 @@ end
 # ============================================================
 # 3. ハミルトニアンの疎行列構築
 # ============================================================
-function build_hamiltonian(basis::Vector{Vector{Int8}},
-                           index::Dict{Vector{Int8}, Int}, 
+function build_hamiltonian(basis::Vector{Vector{UInt128}},
+                           index::Dict{Vector{UInt128}, Int}, 
                            params::SystemParams)
     dim = length(basis)
     T = build_FF_tensor()
     D = build_density_tensor()
 
-    v0 = params.c0 / (2 * π)
-    v1 = params.c1 / (2 * π)
+    L_box = params.L_box
+    ## v0 = params.c0 / (2 * π)
+    ## v1 = params.c1 / (2 * π)
+    v0 = params.c0 / L_box
+    v1 = params.c1 / L_box
     k_max = params.k_max
     n_modes = params.n_modes
     hbar2_over_2m = params.hbar2_over_2m
@@ -129,13 +133,13 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
 
 
     """運動エネルギー Σ_l l² n_l"""
-    @inline function kinetic_energy(occ::Vector{Int8})
+    @inline function kinetic_energy(occ::Vector{UInt128})
         E = 0.0
         for s in 1:3, m in 1:n_modes
             n = occ[cell_index(m, s)]
             if n > 0
                 l = m - k_max - 1
-                E += hbar2_over_2m * Float64(l^2) * Float64(n)
+                E += hbar2_over_2m * Float64((2 * π * l / L_box)^2) * Float64(n)
             end
         end
         return E
@@ -145,7 +149,7 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
     a†_{l1n,c} a†_{l2n,d} a_{l2,b} a_{l1,a} を occ に作用させる。
     戻り値: (新しい occ, 振幅) または nothing
     """
-    @inline function apply_pair!(new_occ::Vector{Int8}, occ::Vector{Int8},
+    @inline function apply_pair!(new_occ::Vector{UInt128}, occ::Vector{UInt128},
                                  l1::Int, a::Int, l2::Int, b::Int,
                                  l1n::Int, c::Int, l2n::Int, d::Int)
         copyto!(new_occ, occ)
@@ -182,7 +186,7 @@ function build_hamiltonian(basis::Vector{Vector{Int8}},
     rows = Int[]; cols = Int[]; vals = Float64[]
     sizehint!(rows, dim * 50); sizehint!(cols, dim * 50); sizehint!(vals, dim * 50)
 
-    new_occ = zeros(Int8, n_modes * 3)
+    new_occ = zeros(UInt128, n_modes * 3)
 
     for (i, occ) in enumerate(basis)
         # 対角: 運動エネルギー

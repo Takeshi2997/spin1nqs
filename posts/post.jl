@@ -24,10 +24,10 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "20260922"
+    srcday = "20260928"
     srcdir = "./data/" * srcday
-    epoch = 12000
-    filename = "/nqs_model_9218_epoch" * string(epoch) * ".jld2"
+    epoch = 13000
+    filename = "/nqs_model_6466_epoch" * string(epoch) * ".jld2"
 
     dirname = "./data/" * srcday * "_estimated"
     if !isdir(dirname)
@@ -45,6 +45,7 @@ function main()
     sys_config = config["system"]
     k_max = sys_config["k_max"]
     n_particles = sys_config["n_particles"]
+    L_box = n_particles * 2 * π / 4
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
     c1 = Float32(sys_config["c1"])
@@ -69,6 +70,7 @@ function main()
     params = SystemParams(
         k_max,
         2 * k_max + 1,
+        L_box,
         hbar2_over_2m,
         c0,  # c0 (密度相互作用)
         c1   # c1 (スピン交換相互作用)
@@ -190,13 +192,13 @@ function main()
     # 相関関数の評価
     inputs = Float32.(all_states)
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
-    eval_space_correlation(all_states, outputs, w_lst, k_max, basis.threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
+    eval_space_correlation(all_states, outputs, w_lst, k_max, L_box, basis.threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
 
     println("=== 計算が終了しました ===")
     close(io)
 end
 
-function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
+function eval_space_correlation(states, outputs, w, k_max, L_box, threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
     filename  = dirname * "/space_correlation" * "_epoch" * string(epoch) * ".txt"
     if isfile(filename)
         rm(filename)
@@ -271,7 +273,7 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chu
     println(nd_diag)
 
     # フーリエ変換
-    L_box = Float32(2 * π)
+    ## L_box = Float32(2 * π)
     x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
     k_list = Float32.((2 * π / L_box) .* (-k_max:k_max))
     W = exp.(-1.0f0im .* x_grid .* k_list')

@@ -84,6 +84,7 @@ function main()
     sys_config = config["system"]
     k_max = sys_config["k_max"]
     n_particles = sys_config["n_particles"]
+    L_box = n_particles * Float32(2 * π / 4)
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
     c1 = Float32(sys_config["c1"])
@@ -120,6 +121,7 @@ function main()
     params = SystemParams(
         k_max,
         2 * k_max + 1,
+        L_box,
         hbar2_over_2m,
         c0,  # c0 (密度相互作用)
         c1   # c1 (スピン交換相互作用)
@@ -140,8 +142,8 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260921_1/nqs_model_4610_epoch7000.jld2")
-    ## e_start = 7001
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20260927/nqs_model_6466_epoch20000.jld2")
+    ## e_start = 1
     n_params = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送

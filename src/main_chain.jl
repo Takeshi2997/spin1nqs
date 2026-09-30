@@ -86,6 +86,14 @@ function parse_commandline()
             help = "エポック数"
             arg_type = Int
             default = 10000
+        "--epsilon"
+            help = "正則化パラメータ"
+            arg_type = Float32
+            default = 0.3
+        "--beta"
+            help = "重点重みパラメータ"
+            arg_type = Float32
+            default = 1.0
         "--init"
             help = "初期化ファイル名"
             arg_type = String
@@ -101,7 +109,7 @@ function parse_commandline()
 end
 
 function main()
-    dirname = "./data/" * "n_scan_c1_const" ## Dates.format(now(), "yyyymmdd")
+    dirname = "./data/" * "n_scan_c1_const" * Dates.format(now(), "yyyymmdd")
     dirname = create_unique_dir(dirname)
     filename  = dirname * "/data.txt"
 
@@ -130,6 +138,7 @@ function main()
     config["system"]["k_max"] = k_max
     n_particles = args["n"]
     config["system"]["n_particles"] = n_particles
+    L_box = n_particles * Float32(2 * π / 4)
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
     c1 = args["c1"]
@@ -146,12 +155,14 @@ function main()
     n_epochs = args["n_epoch"]
     config["training"]["n_epochs"] = n_epochs
     learning_rate = Float32(train_config["learning_rate"])
-    epsilon = Float32(train_config["epsilon"])
+    epsilon = args["epsilon"]
+    train_config["epsilon"] = epsilon
     epsilon2 = Float32(train_config["epsilon2"])
     decay = Float32(train_config["decay"])
     lambda_min = Float32(train_config["lambda_min"])
     clipping_threshold = Float32(train_config["clipping_threshold"])
-    beta = Float32(train_config["beta"])
+    beta = args["beta"]
+    train_config["beta"] = beta
     p_spin = Float32(train_config["p_spin"])
     n_total = n_walkers * n_steps
 
@@ -172,6 +183,7 @@ function main()
     params = SystemParams(
         k_max,
         2 * k_max + 1,
+        L_box,
         hbar2_over_2m,
         c0,  # c0 (密度相互作用)
         c1   # c1 (スピン交換相互作用)

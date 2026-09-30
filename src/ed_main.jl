@@ -14,19 +14,22 @@ using .Exact
 
 function main()
     @printf("=== スピン1ボソン 厳密対角化 ===\n")
-    k_max = 5
+    k_max = 3
     n_modes = 2 * k_max + 1
-    n_particles = 8
+    n_particles = 4
+    L_box = n_particles * 2 * π / 4
     hbar2_over_2m = 1.0
     c0 = 0.0
     c1 = 1.0
-    target_Mz = 0
+    target_Mz = 2
+    target_P = 0
     constrain_P = true
     
     # ハミルトニアン係数（接触相互作用）
     params = SystemParams(
         k_max,
         n_modes,
+        L_box,
         hbar2_over_2m,
         c0,  # c0 (密度相互作用)
         c1   # c1 (スピン交換相互作用)
@@ -34,8 +37,8 @@ function main()
 
     dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_exact"
     mkpath(dirname)
-    filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1)).txt"
-    logfilename = dirname * "/log_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1)).txt"
+    filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P).txt"
+    logfilename = dirname * "/log_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P).txt"
 
     open(filename, "w") do io
         @printf(io, "k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)
@@ -48,14 +51,14 @@ function main()
 
     print("基底を列挙中... "); flush(stdout)
     t0 = time()
-    basis = enumerate_basis(n_particles, n_modes, k_max, target_Mz, constrain_P)
+    basis = enumerate_basis(n_particles, n_modes, k_max, target_Mz, target_P, constrain_P)
     dim = length(basis)
     @printf("完了 (%.1f 秒)\n", time() - t0)
     @printf(f, "セクター次元: %d\n\n", dim)
 
     print("インデックス辞書を構築中... "); flush(stdout)
     t0 = time()
-    index = Dict{Vector{Int8}, Int}()
+    index = Dict{Vector{UInt128}, Int}()
     sizehint!(index, dim)
     for (i, occ) in enumerate(basis)
         index[occ] = i
@@ -150,12 +153,12 @@ function main()
 
     close(f)
 
-    eval_space_correlation(gs, basis, index, k_max, filename)
+    eval_space_correlation(gs, basis, index, k_max, L_box, filename)
 
     return vals[1]
 end
 
-function eval_space_correlation(gs::Vector{Float64}, basis, index, k_max, filename)
+function eval_space_correlation(gs::Vector{Float64}, basis, index, k_max, L_box, filename)
     touch(filename)
 
     n_modes = 2k_max + 1
@@ -205,7 +208,7 @@ function eval_space_correlation(gs::Vector{Float64}, basis, index, k_max, filena
  
 
     # フーリエ変換
-    L_box = Float32(2 * π)
+    ## L_box = Float32(2 * π)
     x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
     k_list = Float32.((2 * π / L_box) .* q_range)
     W = exp.(-1.0f0im .* x_grid .* k_list')
@@ -219,7 +222,7 @@ function eval_space_correlation(gs::Vector{Float64}, basis, index, k_max, filena
     cor31_x_vec = real.(W * rho2_q_31) ./ L_box
 
     rho2_total = dropdims(sum(rho2_q, dims=(2,3)), dims=(2,3))   # [n_q]
-    cord_x_vec = real.([sum(exp(im*q*x) * rho2_total[qi] for (qi,q) in enumerate(q_range))/(2π) for x in x_grid])
+    cord_x_vec = real.(W * rho2_total) ./ L_box
  
     open(filename, "a") do io
         @printf(io, "x, C11, C22, C33, C12, C23, C31, Cd,\n")
