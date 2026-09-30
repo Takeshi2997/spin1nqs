@@ -13,7 +13,7 @@ export build_momentum_nqs, save_nqs_model, load_nqs_model, initialize_model, eva
 """
 波数空間のスピン1ボゾン系向けNQSを構築する関数
 """
-function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
+function build_momentum_nqs(k_max::Int; hidden_dim::Int=32, hidden_dim0::Int=32)
     n_modes = 2 * k_max + 1
     input_features = n_modes * 3 # (波数モード数) × (スピン3成分)
     
@@ -24,8 +24,9 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
         FlattenLayer(), 
 
         # 2. 全結合層
-        Dense(input_features => hidden_dim, tanh),
-        ## Dense(hidden_dim => hidden_dim, tanh),
+        ## Dense(input_features => hidden_dim, tanh),
+        Dense(input_features => hidden_dim0, relu),
+        Dense(hidden_dim0 => hidden_dim, tanh),
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力
@@ -76,7 +77,7 @@ end
 function eval_complex_network(model, inputs, ps, st)
     # 入力は [n_modes, 3, n_walkers] の形状を想定
     # Lux.apply は [2, n_walkers] の出力を返す（1行目: log|Ψ|の実部、2行目: log|Ψ|の虚部）
-    outputs, _ = Lux.apply(model, Float32.(inputs), ps, st)
+    outputs, _ = Lux.apply(model, Float32.(log.(1 .+ inputs)), ps, st)
     
     # 複素数の波動関数 Ψ を構築
     log_psi_real = outputs[1, :]

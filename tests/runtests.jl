@@ -29,18 +29,21 @@ using LinearAlgebra
 using SparseArrays
 using ComponentArrays
 using Zygote
+using Lux
 
 # ★ プロジェクト構成に合わせて調整 ------------------------------------
 # ed_from_kernel.jl / ed_spin1.jl は、末尾の main() 呼び出しを
 #   if abspath(PROGRAM_FILE) == @__FILE__; main(); end
 # で囲ってから include すること (include 時に main が走らないように)。
-include("../src/model.jl")
 include("../src/hilbert.jl")
+include("../src/model.jl")
+include("../src/sampler.jl")
 include("../src/physics.jl")
 include("../src/jacobian.jl")
 include("ed_from_kernel.jl")   # build_H_from_kernel, build_H_independent, enumerate_basis
 using .Model
 using .Hilbert
+using .Sampler
 using .Physics
 # --------------------------------------------------------------------
 
@@ -74,40 +77,40 @@ const REF = (
     ),
 )
 
-# ============================================================
-# 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
-# ------------------------------------------------------------
-# 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
-#       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
-#       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
-#       ことを恒常的に保証する。
-# ============================================================
-@testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
-    basis = enumerate_basis(6)   # Sz=0, P=0
-    dim = length(basis)
-    @test dim == 23607
-
-    H_indep = build_H_independent(basis)
-
-    # 独立実装のエルミート性と参照値
-    @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
-    
-    vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
-                                issymmetric = true,
-                                krylovdim = 60,
-                                maxiter = 500,
-                                tol = 1e-12)
-    @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
-    @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
-
-    if GPU_OK
-        H_kernel = build_H_from_kernel(basis)
-        # Float32 カーネルなので許容誤差は 1e-6 オーダー
-        @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
-        @test maximum(abs.(H_kernel - H_indep)) < 1e-5
-    end
-end
-
+## # ============================================================
+## # 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
+## # ------------------------------------------------------------
+## # 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
+## #       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
+## #       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
+## #       ことを恒常的に保証する。
+## # ============================================================
+## @testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
+##     basis = enumerate_basis(6)   # Sz=0, P=0
+##     dim = length(basis)
+##     @test dim == 23607
+## 
+##     H_indep = build_H_independent(basis)
+## 
+##     # 独立実装のエルミート性と参照値
+##     @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
+##     
+##     vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
+##                                 issymmetric = true,
+##                                 krylovdim = 60,
+##                                 maxiter = 500,
+##                                 tol = 1e-12)
+##     @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
+##     @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
+## 
+##     if GPU_OK
+##         H_kernel = build_H_from_kernel(basis)
+##         # Float32 カーネルなので許容誤差は 1e-6 オーダー
+##         @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
+##         @test maximum(abs.(H_kernel - H_indep)) < 1e-5
+##     end
+## end
+## 
 ## # ============================================================
 ## # 2. 参照観測量 (独立EDの基底状態から)
 ## # ------------------------------------------------------------
@@ -254,7 +257,7 @@ end
 ##     @test pick(0.5f0, N) in 1:N
 ##     @test pick(1.0f0, N - 1) == N - 1        # 2粒子目の選択
 ## end
-## 
+
 ## # ============================================================
 ## # 6. サンプラー: 詳細釣り合い (統計テスト)
 ## # ------------------------------------------------------------
@@ -267,15 +270,38 @@ end
 ## # ============================================================
 ## @testset "詳細釣り合い (一様ターゲット, N=4)" begin
 ##     if GPU_OK
+##         chunk = 100
 ##         n_walkers = 2000
-##         n_steps   = 2000        # 熱平衡化込み
-##         basis = SpinorBasis(1, 4, n_walkers)     # ★ コンストラクタ名
+##         n_thermal = 2000        # 熱平衡化込み
+##         beta = 1.3f0
+##         p_spin = 0.5f0
+##         n_particles = 4
+##         k_max = 1
+##         hidden_dim = 32
+##         rng = Xoshiro(42)
+##         basis = MomentumSpinorBasis(k_max, n_particles, 256, n_walkers)     # ★ コンストラクタ名
 ##         initialize_states!(basis, 0)
 ## 
 ##         # ψ = const でサンプリング: 受理率 = min(1, h_factor)
 ##         # ★ 一様 ψ での MH ループは実装に合わせて書く。
 ##         #    sampler の log_psi を 0 に固定して sample_step! を呼ぶ形が簡単。
-##         run_uniform_sampling!(basis, n_steps)    # ★ 要実装 or 既存関数流用
+##         nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
+##         ps_cpu, st_cpu = initialize_model(nqs_model, rng)
+## 
+##         # 重み(ps)と状態(st)をGPUへ転送
+##         ps = ComponentArray(ps_cpu) |> cu
+##         st = st_cpu |> cu
+## 
+##         # C. サンプラーバッファの確保
+##         sampler = MCMCSampler(basis)
+##         buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (2 * k_max + 1), chunk)
+##  
+##         # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
+##         println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
+##         for step in 1:n_thermal
+##             sample_step_uniform!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
+##         end
+##         println("熱平衡化が完了しました。")
 ## 
 ##         st = Array(basis.states)
 ##         @test minimum(st) >= 0
@@ -293,7 +319,7 @@ end
 ##         @test_skip "GPU なし"
 ##     end
 ## end
-## 
+
 ## # ============================================================
 ## # 7. max_transitions の解析的上限
 ## # ------------------------------------------------------------
@@ -409,37 +435,102 @@ end
 ##     end
 ## end
 
+# ============================================================
+# 検証: Zygote との一致 (runtests.jl に移植すること)
+# ------------------------------------------------------------
+# 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
+# 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
+# ============================================================
+@testset "Jacobianテスト" begin
+    rng = Xoshiro(42)
+    model = build_momentum_nqs(1, hidden_dim=8)
+    ps_tmp, st = initialize_model(model, rng)
+    ps = ComponentArray(ps_tmp)
+ 
+    function test_O_bar(model, ps, st; nb = 2)
+        rng = Random.default_rng()
+        inputs = rand(Float32, 3, 3, nb) .* 3      # 適当な入力
+        inputs_tmp = Float32.(reshape(inputs, 9, :))
+     
+        println(inputs)
+        println(inputs_tmp)
+        y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
+        y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
+        y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
+        println(y1)
+        println(y2)
+        println(y3)
+        Ō, logψ = compute_O_bar(inputs_tmp, ps)
+    
+        # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
+        f_re(p) = eval_complex_network_real(model, inputs, p, st)
+        f_im(p) = eval_complex_network_imag(model, inputs, p, st)
+        J_re = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
+        J_im = Zygote.jacobian(f_im, ps)[1]
+        O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
+        Ō_ref = conj.(O_true)                                 # 規約B
+    
+        println(size(Ō))
+        println(size(Ō_ref))
+
+        @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
+        # 前向きも一致するか
+        @test isapprox(Array(logψ), eval_complex_network(model, inputs, ps, st); rtol = 1e-5)
+        println("compute_O_bar: Zygote と一致 ✓")
+    end
+
+    test_O_bar(model, ps, st)
+end
+
 ## # ============================================================
-## # 検証: Zygote との一致 (runtests.jl に移植すること)
-## # ------------------------------------------------------------
-## # 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
-## # 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
+## # テスト
 ## # ============================================================
-## @testset "Jacobianテスト" begin
-##     rng = Xoshiro(42)
-##     model = build_momentum_nqs(1, hidden_dim=64)
-##     ps, st = initialize_model(model, rng)
+## @testset "Jacobianテスト SkipConnection" begin
+##     k_max = 5
+##     n_h = 32
+##     n_b = 32
+##     nb = 7
+##     rng = Random.MersenneTwister(7)
+##     x = Float32.(rand(rng, 2 * k_max + 1, 3, nb))
 ##  
-##     function test_O_bar(model, ps, st; nb = 7)
-##         rng = Random.default_rng()
-##         n_in = 33                                        # ★ n_modes*3 に合わせる
-##         inputs = CUDA.rand(Float32, n_in, nb) .* 3      # 適当な入力
-##     
-##         Ō, logψ = compute_O_bar(inputs, ps)
-##     
-##         # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
-##         inputs_h = Array(inputs); ps_h = ps |> cpu_device()   # ★ CPU比較が楽
-##         f_re(p) = real.(vec_eval(model, inputs_h, p, st))     # ★ 実装のeval関数に合わせる
-##         f_im(p) = imag.(vec_eval(model, inputs_h, p, st))
-##         J_re = Zygote.jacobian(f_re, ps_h)[1]                 # [nb, n_params]
-##         J_im = Zygote.jacobian(f_im, ps_h)[1]
-##         O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
-##         Ō_ref = conj.(O_true)                                 # 規約B
-##     
-##         @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
-##         # 前向きも一致するか
-##         @test isapprox(Array(logψ), vec_eval(model, inputs_h, ps_h, st); rtol = 1e-5)
-##         println("compute_O_bar: Zygote と一致 ✓")
+##     ## @testset "移植で出力一致" begin
+##     ##     model_old = Chain(NoOpLayer(), Dense(n_in => n_h, act), Dense(n_h => 2))
+##     ##     ps_old, st_old = Lux.setup(rng, model_old)
+##     ##     ps_old = ComponentVector{Float32}(ps_old)
+##     ##     model_new = build_residual_model(n_in, n_h, n_b)
+##     ##     ps_new, st_new = expand_to_residual(ps_old, model_new; rng = rng)
+##     ##     @test lux_logpsi(model_old, x, ps_old, st_old) ≈ lux_logpsi(model_new, x, ps_new, st_new)
+##     ##     @test Lux.parameterlength(model_new) == nparams_residual(n_in, n_h, n_b)
+##     ##     # Wb の勾配が最初から立つこと (a ≠ 0)
+##     ##     Ō, _ = compute_O_bar(x, ps_new)
+##     ##     off = n_in*n_h + n_h + n_h*n_b + n_b
+##     ##     @test maximum(abs.(Ō[off+1:off+n_h*n_b, :])) > 0
+##     ## end
+##  
+##     model = build_momentum_nqs(k_max, hidden_dim = n_h)
+##     ps, st = Lux.setup(rng, model)
+##     ps = ComponentVector{Float32}(ps)
+##     ps .+= 0.05f0 .* randn(rng, Float32, length(ps))   # 残差ブロックも非ゼロにして検証
+##  
+##     @testset "Jacobian: 手書き vs Zygote" begin
+##         f_re(p) = eval_complex_network_real(model, x, p, st)
+##         f_im(p) = eval_complex_network_imag(model, x, p, st)
+##         Jre = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
+##         Jim = Zygote.jacobian(f_im, ps)[1]
+##         Ō_ref = conj.(transpose(Jre) .+ im .* transpose(Jim))   # 規約B
+##         Ō, _ = compute_and_O_bar(x, ps)
+##         @test isapprox(Ō, Ō_ref; rtol = 1e-4, atol = 1e-5)
+##     end
+##  
+##     if CUDA.functional()
+##         @testset "GPU 一致" begin
+##             CUDA.allowscalar(false)
+##             Ō_cpu, l_cpu = compute_O_bar(x, ps)
+##             ps_g = ps |> gpu_device()
+##             Ō_gpu, l_gpu = compute_O_bar(CuArray(x), ps_g)
+##             @test isapprox(Array(Ō_gpu), Ō_cpu; rtol = 1e-4, atol = 1e-5)
+##             @test isapprox(Array(l_gpu), l_cpu; rtol = 1e-5)
+##         end
 ##     end
 ## end
 
