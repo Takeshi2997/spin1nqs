@@ -10,16 +10,16 @@ target_Mz = 0
 chunk = 256
 n_walkers = 256
 n_thermal = 512
-n_steps = 24
+n_steps = 16
 n_interval = 8
 n_epochs = 40000
 learning_rate = 0.01
-epsilon = 0.3
-epsilon2 = 0.001
+epsilon = 0.1
+epsilon2 = 0.01
 decay = 0.999
 lambda_min = 0.000001
 clipping_threshold = 10.0
-beta = 1.0
+beta = 0.9
 p_spin = -0.3
 
 [estimate]
@@ -28,11 +28,11 @@ n_walkers = 2048
 n_thermal = 1024
 n_steps = 32
 n_interval = 16
-beta = 1.0
+beta = 0.9
 p_spin = -0.3
 
 [model]
-hidden_dim = 128
+hidden_dim = 64
 
 [io]
 log_iter = 10

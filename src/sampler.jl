@@ -12,16 +12,16 @@ export MCMCSampler, sample_step!, sample_step_uniform!
 MCMCの作業用メモリを管理する構造体
 """
 struct MCMCSampler
-    proposed_states::CuArray{Int32, 3}      # 提案状態を入れるバッファ
+    proposed_states::CuArray{Float32, 3}      # 提案状態を入れるバッファ
     accepted::CuArray{Int32, 1}             # 受理率
     h_factor::CuArray{Float32, 1}           # ヘイスティングス因子
-    current_inputs::CuArray{Int32, 3}       # NN入力用(現在)
-    proposed_inputs::CuArray{Int32, 3}      # NN入力用(提案)
+    current_inputs::CuArray{Float32, 3}       # NN入力用(現在)
+    proposed_inputs::CuArray{Float32, 3}      # NN入力用(提案)
     rand_vals::CuArray{Float32, 1}          # 受容判定用の一様乱数バッファ
 
     function MCMCSampler(basis)
         # ウォーカー数分のメモリを初期化時に「一度だけ」確保する
-        proposed_states = CUDA.zeros(Int32, size(basis.states))
+        proposed_states = CUDA.zeros(Float32, size(basis.states))
         accepted = CUDA.zeros(Int32, basis.n_walkers)
         h_factor = CUDA.ones(Float32, basis.n_walkers)
         current_inputs = CUDA.zeros(Float32, size(basis.states))

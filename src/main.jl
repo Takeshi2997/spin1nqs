@@ -144,23 +144,29 @@ function main()
     e_start = 1
     ## ps_cpu, st_cpu = load_nqs_model("./data/20260927/nqs_model_6466_epoch20000.jld2")
     ## e_start = 1
-    n_params = Lux.parameterlength(ps_cpu)
+    nqs_length = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
-    ps = ComponentArray(ps_cpu) |> cu
+    nqs_params = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
 
-    rule = Optimisers.Adam()
-    opt_state = Optimisers.setup(rule, ps)
+    ## Jastrow用のインデックス
+    ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
+    J = CUDA.zeros(Float32, npair(ji))
+    U = build_U(J, ji)
+    n_length = nqs_length + npair(ji)
+
+    ## 結合パラメータ
+    ps = NqsParametersWithJastrow(nqs_params, U, n_particles)
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
     buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1), chunk)
-    all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
+    all_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, n_walkers * n_steps)
     all_outputs = CUDA.zeros(ComplexF32, n_walkers * n_steps)
-    O_sum   = CUDA.zeros(ComplexF32, n_params)
-    OE_sum  = CUDA.zeros(ComplexF32, n_params)
-    OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params)
+    O_sum   = CUDA.zeros(ComplexF32, n_length)
+    OE_sum  = CUDA.zeros(ComplexF32, n_length)
+    OO_sum  = CUDA.zeros(ComplexF32, n_length, n_length)
  
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
@@ -207,9 +213,9 @@ function main()
         n2_sum = 0
         n3_sum = 0
         np0_sum = 0
-        O_sum   = CUDA.zeros(ComplexF32, n_params)
-        OE_sum  = CUDA.zeros(ComplexF32, n_params)
-        OO_sum  = CUDA.zeros(ComplexF32, n_params, n_params)
+        O_sum   = CUDA.zeros(ComplexF32, n_length)
+        OE_sum  = CUDA.zeros(ComplexF32, n_length)
+        OO_sum  = CUDA.zeros(ComplexF32, n_length, n_length)
         for c in Iterators.partition(1:n_total, chunk)
             inputs_c = all_states[:, :, c]
             outputs_c = all_outputs[c]
@@ -219,8 +225,9 @@ function main()
             S2_loc_c = compute_local_S2(inputs_c, outputs_c, n_particles, k_max, basis.threads, nqs_model, ps, st)
             ## report("Compute local Energy")
             ## O_c = compute_jacobian(nqs_model, inputs_c, ps, st)  # [n_params, length(c)]
-            inputs_tmp = Float32.(reshape(inputs_c, (2 * k_max + 1) * 3, :))
-            O_c, _ = compute_O_bar(inputs_tmp, ps)
+            inputs_tmp = reshape(inputs_c, (2 * k_max + 1) * 3, :)
+            ON_c, _ = compute_O_bar(inputs_tmp, ps.nqs_params)
+            O_c = vcat(ON_c, ComplexF32.(jastrow_O(inputs_tmp, ji, n_particles / 3)))
             ## report("Compute jacobian")
           
             w = w_lst[c]
@@ -267,7 +274,8 @@ function main()
             end
         end
         if epoch % save_iter == 0
-            save_nqs_model(dirname, epoch, ps, st)
+            save_nqs_model(dirname, epoch, ps.nqs_params, st)
+            save_jastrow(dirname, epoch, J)
         end
 
         ## report("Compute Average")
@@ -277,6 +285,8 @@ function main()
 
         ## SR法
         delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
+        delta_p_nqs = delta_p[1:nqs_length]
+        delta_p_J = delta_p[nqs_length+1:end]
         ## report("SR")
 
         gnorm = sqrt(sum(abs2, delta_p))
@@ -284,7 +294,10 @@ function main()
             delta_p .*= 1.0f0 / gnorm
             n_clipping += 1
         end
-        ps .= ps .- learning_rate .* delta_p
+        nqs_params .= nqs_params .- learning_rate .* delta_p_nqs
+        J .= J .- learning_rate .* delta_p_J
+        U = build_U(J, ji)
+        ps = NqsParametersWithJastrow(nqs_params, U, n_particles)
 
         ## report("End")
         ## end

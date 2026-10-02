@@ -457,10 +457,12 @@ const REF = (
         y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
         y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
         y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
+        y4, st_l4 = Lux.apply(model.layers.layer_4, y3, ps.layer_4, st_l3)
         println(y1)
         println(y2)
         println(y3)
-        Ō, logψ = compute_O_bar(inputs_tmp, ps)
+        println(y4)
+        Ō, logψ = compute_O_bar(Float32.(log.(1 .+ inputs_tmp)), ps)
     
         # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
         f_re(p) = eval_complex_network_real(model, inputs, p, st)

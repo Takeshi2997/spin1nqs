@@ -18,11 +18,11 @@ mutable struct MomentumSpinorBasis
     # 状態配列: サイズ [n_modes, スピン成分数(3), n_walkers]
     # モードインデックス: 1 => -k_max, ..., (k_max+1) => 0, ..., n_modes => +k_max
     # スピン成分インデックス: 1 => m=-1, 2 => m=0, 3 => m=+1
-    states::CuArray{Int32, 3} 
+    states::CuArray{Float32, 3} 
 
     function MomentumSpinorBasis(k_max::Int, n_particles::Int, threads::Int, n_walkers::Int)
         n_modes = 2 * k_max + 1
-        states = CUDA.zeros(Int32, n_modes, 3, n_walkers)
+        states = CUDA.zeros(Float32, n_modes, 3, n_walkers)
         new(k_max, n_modes, n_particles, n_walkers, threads, states)
     end
 end
@@ -67,7 +67,7 @@ end
 - proposed_states: 提案状態を書き込むための配列（同じサイズ）
 - k_max: カットオフ波数
 """
-function generate_proposal!(states::CuArray{Int32, 3}, proposed_states::CuArray{Int32, 3}, h_factor::CuArray{Float32, 1},
+function generate_proposal!(states::CuArray{Float32, 3}, proposed_states::CuArray{Float32, 3}, h_factor::CuArray{Float32, 1},
     k_max::Int, n_particles::Int, p_spin::Float32, threads::Int)
     n_walkers = size(states, 3)
     
