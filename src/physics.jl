@@ -4,8 +4,7 @@ using CUDA
 using Lux
 using ..Model
 # using ..Hilbert # 必要に応じて
-
-export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix
+export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix, blur
 
 """
 系の物理パラメータをまとめる構造体
@@ -32,7 +31,7 @@ struct PhysicsBuffer
         n_modes = 2 * k_max + 1
         
         # 最初に1回だけ巨大なGPUメモリを確保する
-        proposed_states = CUDA.zeros(Int32, n_modes, 3, max_transitions, n_walkers)
+        proposed_states = CUDA.zeros(Float32, n_modes, 3, max_transitions, n_walkers)
         matrix_elements = CUDA.zeros(Float32, max_transitions, n_walkers)
         
         new(proposed_states, matrix_elements)
@@ -70,9 +69,11 @@ function compute_local_energy(
 )
     n_walkers = size(states, 3)
     
+    ## report("Compute local Energy Start")
     # 1. 運動エネルギーの計算（一瞬で終わります）
     E_loc = _compute_kinetic(states, params) 
-    
+    ## report("Compute kinetic Energy")
+
     # 2. 相互作用エネルギーの計算（遷移テンソルの構築とNN評価）
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
@@ -97,6 +98,8 @@ function compute_local_energy(
     ##     params.c0,
     ##     params.c1
     ## )
+    ## report("Compute Scattering kernel")
+    
 
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
@@ -117,6 +120,7 @@ function compute_local_energy(
 
     # 3. 合計して返す
     E_loc += dropdims(E_V, dims=1)
+    ## report("Compute local Energy End")
     
     return E_loc
 end
@@ -288,7 +292,7 @@ function compute_local_correlation(
     total_t = 9 * n_q * max_t_per
 
     # 通しインデックス total_t で proposed_states と matrix_elements を 1対1 対応させる
-    proposed_states = CUDA.zeros(Int32, n_modes, 3, total_t, n_walkers)
+    proposed_states = CUDA.zeros(Float32, n_modes, 3, total_t, n_walkers)
     matrix_elements = CUDA.zeros(Float32, total_t, n_walkers)
  
     # (A) 遷移先状態 x' と行列要素を一括生成
@@ -617,5 +621,7 @@ function _density_matrix_local_estimator(
 
     return nothing
 end
+
+include("./blur.jl")
 
 end # module

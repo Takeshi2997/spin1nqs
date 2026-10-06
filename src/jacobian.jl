@@ -57,7 +57,7 @@ ps     :: ComponentVector (GPU)
   log_psi  :: CuVector{ComplexF32} [nb]            ついでに前向き評価も返す
           (eval_complex_network の呼び直しを省ける)
 """
-function compute_O_bar(inputs::CuMatrix{Float32}, ps)
+function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     W1 = ps.layer_2.weight        # [n_h, n_in]
     b1 = ps.layer_2.bias          # [n_h]
     W2 = ps.layer_3.weight        # [2, n_h]
@@ -93,7 +93,7 @@ function compute_O_bar(inputs::CuMatrix{Float32}, ps)
     O_W2[2:2:end, :] .= -im .* Hc                    # α=2 行 (偶数行)
 
     # b₂ ブロック: (1, −i) を全サンプルに
-    O_b2 = CuMatrix{ComplexF32}(undef, 2, nb)
+    O_b2 = similar(Hc, 2, nb)
     O_b2[1, :] .= 1.0f0 + 0.0f0im
     O_b2[2, :] .= 0.0f0 - 1.0f0im
 
@@ -107,8 +107,6 @@ end
 ## #   戻り値: Ō [n_params, nb] ComplexF32,  logψ [nb] ComplexF32
 ## # ============================================================
 ## function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
-##     inputs = Float32.(log.(1 .+ inputs))
-## 
 ##     W1 = ps.layer_2.weight;  b1 = ps.layer_2.bias
 ##     W2 = ps.layer_3.weight;  b2 = ps.layer_3.bias
 ##     W3 = ps.layer_4.weight;  b3 = ps.layer_4.bias
@@ -118,21 +116,18 @@ end
 ##     nb  = size(inputs, 2)
 ##  
 ##     # ---- 前向き ----
-##     H1  = act_relu.(W1 * inputs .+ b1)               # [n_h, nb]
-##     println(H1)
-##     H2  = act.(W2 * H1 .+ b2)                   # [n_b, nb]
-##     println(H2)
-##     ## H2  = H1 .+ A                               # [n_h, nb]
-##     out = W3 * H2 .+ b3                         # [2, nb]
-##     println(out)
+##     U  = act_relu.(W1 * inputs .+ b1)
+##     H1 = inputs .+ U
+##     ## H1  = act.(W1 * inputs .+ b1) 
+##     H2  = act.(W2 * H1 .+ b2)
+##     out = W3 * H2 .+ b3
 ##     logψ = ComplexF32.(out[1, :], out[2, :])
 ##     
 ##     # ---- 逆向き (共役済み) ----
-##     ḡ2 = ComplexF32.(W3[1, :], -W3[2, :])                       # [n_h]
-##     ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(A))                     # [n_h, nb]
-##     D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))                     # [n_h, nb]
-##     Ḡ1 = transpose(ComplexF32.(W2)) * D̄a                  # [n_h, nb]
-##     D̄1 = Ḡ1 .* ComplexF32.(dact_relu.(H1))                    # [n_h, nb]
+##     ḡ2 = ComplexF32.(W3[1, :], -W3[2, :])
+##     D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
+##     Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
+##     D̄1 = Ḡ1 .* ComplexF32.(dact_relu.(U))
 ##  
 ##     Xc  = ComplexF32.(inputs); H1c = ComplexF32.(H1); H2c = ComplexF32.(H2)
 ##  

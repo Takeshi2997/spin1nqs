@@ -1,11 +1,11 @@
-export JULIA_CUDA_MEMORY_POOL:=none
+export JULIA_CUDA_HARD_MEMORY_LIMIT:=23GiB
 
 JULIA ?= julia --project
 K := 5
 C1 := 1.0
 
 main:
-	CUDA_VISIBLE_DEVICES=1 julia ./src/main.jl ./params/config_server.toml
+	CUDA_VISIBLE_DEVICES=0 julia ./src/main.jl ./params/config_server.toml
 
 clean:
 	rm -f *.txt *.png *.dat nohup.out

@@ -9,19 +9,6 @@ using ComponentArrays
 using Printf
 using Dates
 
-include("model.jl")
-include("optimise.jl")
-include("hilbert.jl")
-include("sampler.jl")
-include("physics.jl")
-
-using CUDA
-using .Model
-using .Optimise
-using .Hilbert
-using .Sampler
-using .Physics
-
 const start_ref = Ref{UInt64}(time_ns())
 function reset_start!()
     start_ref[] = time_ns()
@@ -34,7 +21,7 @@ reset_start!()
 function report(label)
     CUDA.synchronize()   # 非同期実行の完了を待つ (重要)
     time = get_elapsed()
-    @printf("%-30s %.3f GiB, Elapsed time %5.3f ms\n", label, CUDA.used_memory() / 2^30, time)
+    @printf("%-30s, Elapsed time %5.3f ms\n", label, time)
     reset_start!()
 end
 
@@ -56,6 +43,18 @@ function create_unique_dir(base_name::String)
         i += 1
     end
 end
+
+include("model.jl")
+include("optimise.jl")
+include("hilbert.jl")
+include("sampler.jl")
+include("physics.jl")
+
+using .Model
+using .Optimise
+using .Hilbert
+using .Sampler
+using .Physics
 
 function main()
     dirname = "./data/" * Dates.format(now(), "yyyymmdd")
@@ -105,7 +104,7 @@ function main()
     lambda_min = Float32(train_config["lambda_min"])
     clipping_threshold = Float32(train_config["clipping_threshold"])
     beta = Float32(train_config["beta"])
-    p_spin = Float32(train_config["p_spin"])
+    q = Float32(train_config["q"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -142,8 +141,8 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20260927/nqs_model_6466_epoch20000.jld2")
-    ## e_start = 1
+    ## ps_cpu, st_cpu = load_nqs_model("./data/20261006/nqs_model_2906_epoch3000.jld2")
+    ## e_start = 3001
     nqs_length = Lux.parameterlength(ps_cpu)
 
     # 重み(ps)と状態(st)をGPUへ転送
@@ -153,6 +152,7 @@ function main()
     ## Jastrow用のインデックス
     ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
     J = CUDA.zeros(Float32, npair(ji))
+    ## J = load_jastrow("./data/20261006/jastrow_780_epoch3000.jld2") |> cu
     U = build_U(J, ji)
     n_length = nqs_length + npair(ji)
 
@@ -161,7 +161,9 @@ function main()
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
-    buffer = PhysicsBuffer(k_max, min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1), chunk)
+    max_transitions = min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1)
+    buffer = PhysicsBuffer(k_max, max_transitions, chunk)
+    blurred_proposed_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, max_transitions, chunk)
     all_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, n_walkers * n_steps)
     all_outputs = CUDA.zeros(ComplexF32, n_walkers * n_steps)
     O_sum   = CUDA.zeros(ComplexF32, n_length)
@@ -171,7 +173,7 @@ function main()
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
     for step in 1:n_thermal
-        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
+        sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
     end
     println("熱平衡化が完了しました。")
 
@@ -185,24 +187,35 @@ function main()
         for step in 1:n_steps
             for _ in 1:n_interval
                 # マルコフ連鎖を1ステップ進める
-                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta, p_spin)
+                sample_step!(sampler, basis, nqs_model, k_max, n_particles, ps, st, beta)
             end
-            
+
             all_states[:, :, (step-1)*n_walkers+1 : step*n_walkers] .= basis.states
         end
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        logw_lst = CUDA.zeros(Float32, n_total)
+        w_lst = CUDA.zeros(Float32, n_total)
+        ## logw_lst = CUDA.zeros(Float32, n_total)
         for c in Iterators.partition(1:n_total, chunk)
+            blurred_states, w = blur(
+                all_states[:, :, c], 
+                blurred_proposed_states, 
+                params, 
+                q, 
+                basis.threads, 
+                nqs_model, ps, st
+            )
+            all_states[:, :, c] .= blurred_states
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             all_outputs[c] .= outputs_c
-            logw = beta .* real.(outputs_c)
-            logw_lst[c] = logw
+            w_lst[c] .= w
+            ## logw = beta .* real.(outputs_c)
+            ## logw_lst[c] = logw
         end
-        logw_lst .-= maximum(logw_lst)
-        w_lst = exp.(logw_lst)
+        ## logw_lst .-= maximum(logw_lst)
+        ## w_lst = exp.(logw_lst)
         w_sum = sum(w_lst)
         w2 = w_sum^2 / sum(w_lst.^2) / n_total
 
@@ -262,10 +275,7 @@ function main()
         n_off = n_particles - sum(np0_sum) / w_sum
 
         # C. 進捗の表示
-        if epoch % log_iter == 0
-            n_clipping = 0
-        end
-        if epoch % log_iter == 0 || epoch == e_start
+       if epoch % log_iter == 0 || epoch == e_start
             @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
             epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
             open(filename, "a") do io
@@ -285,15 +295,20 @@ function main()
 
         ## SR法
         delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
-        delta_p_nqs = delta_p[1:nqs_length]
-        delta_p_J = delta_p[nqs_length+1:end]
         ## report("SR")
 
         gnorm = sqrt(sum(abs2, delta_p))
+        if epoch % log_iter == 0
+            n_clipping = 0
+        end
         if gnorm > clipping_threshold
             delta_p .*= 1.0f0 / gnorm
             n_clipping += 1
         end
+        delta_p_nqs = delta_p[1:nqs_length]
+        delta_p_J = delta_p[nqs_length+1:end]
+        ## println("gnorm = $(gnorm), n_clipping = $(n_clipping)")
+        ## println("norm of delta_p_nqs = $(sqrt(sum(abs2, delta_p_nqs))), norm of delta_p_J = $(sqrt(sum(abs2, delta_p_J)))")
         nqs_params .= nqs_params .- learning_rate .* delta_p_nqs
         J .= J .- learning_rate .* delta_p_J
         U = build_U(J, ji)
