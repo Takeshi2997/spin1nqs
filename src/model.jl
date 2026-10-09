@@ -35,9 +35,10 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
         FlattenLayer(), 
 
         # 2. 全結合層
-        Dense(input_features => hidden_dim, tanh),
-        ## SkipConnection(Dense(input_features => input_features, relu), +), 
-        ## Dense(input_features => hidden_dim, tanh), 
+        ## Dense(input_features => hidden_dim, tanh),
+        Dense(input_features => hidden_dim, tanh_fast), 
+        Dense(hidden_dim => hidden_dim, tanh_fast),
+        ## SkipConnection(Dense(hidden_dim => hidden_dim, tanh), +), 
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力

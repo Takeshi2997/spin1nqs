@@ -1,12 +1,13 @@
 module Optimise
 
 using ..Model
+using CUDA
 using Lux
 using Zygote
 using LinearAlgebra
 using Statistics
 
-export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar
+export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar, minSR_update
 
 include("jacobian.jl")
 
@@ -166,6 +167,22 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epoch, epsilon=0.0
     delta_p = S_reg \ R
 
     return delta_p
+end
+
+"""
+MinSR 更新方向 δθ (θ ← θ - η δθ)
+solver = :cholesky  … (T + λI) x = ε
+solver = :eigen     … 固有値 < rcond·λmax を切る擬似逆 (+λ)
+T = O*O' は O と同じデバイス (GPU なら CUBLAS)、解法は CPU で行う
+"""
+function minSR_update(O_mean::AbstractMatrix, E_mean::AbstractVector, epoch, epsilon, decay, lambda_min)
+    Tc = Hermitian(Matrix{Float32}(Array(O_mean * O_mean')))
+    R = Vector{Float32}(Array(E_mean))
+    lambda = max(epsilon * decay^epoch, lambda_min) 
+    x = cholesky(Tc + lambda * I) \ R
+    xd = copyto!(similar(E_mean, Float32, length(x)), x)
+ 
+    return O_mean' * xd
 end
 
 end # module Optimise

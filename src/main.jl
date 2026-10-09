@@ -166,9 +166,6 @@ function main()
     blurred_proposed_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, max_transitions, chunk)
     all_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, n_walkers * n_steps)
     all_outputs = CUDA.zeros(ComplexF32, n_walkers * n_steps)
-    O_sum   = CUDA.zeros(ComplexF32, n_length)
-    OE_sum  = CUDA.zeros(ComplexF32, n_length)
-    OO_sum  = CUDA.zeros(ComplexF32, n_length, n_length)
  
     # === 3. マルコフ連鎖の熱平衡化（Thermalization） ===
     println("マルコフ連鎖を熱平衡化中 ($(n_thermal) ステップ)...")
@@ -226,9 +223,8 @@ function main()
         n2_sum = 0
         n3_sum = 0
         np0_sum = 0
-        O_sum   = CUDA.zeros(ComplexF32, n_length)
-        OE_sum  = CUDA.zeros(ComplexF32, n_length)
-        OO_sum  = CUDA.zeros(ComplexF32, n_length, n_length)
+        E_lst = CUDA.zeros(ComplexF32, n_total)
+        O_lst = CUDA.zeros(ComplexF32, n_total, n_length)
         for c in Iterators.partition(1:n_total, chunk)
             inputs_c = all_states[:, :, c]
             outputs_c = all_outputs[c]
@@ -251,16 +247,12 @@ function main()
             n2_sum += sum(transpose(w) .* inputs_c[:, 2, :])
             n3_sum += sum(transpose(w) .* inputs_c[:, 3, :])
             np0_sum += sum(transpose(w) .* inputs_c[k_max + 1, :, :])
-            O_sum  .+= dropdims(sum(transpose(w) .* O_c, dims=2), dims=2)
-            OE_sum .+= O_c * (w .* E_loc_c)
-            OO_sum .+= (transpose(w) .* conj.(O_c)) * transpose(O_c)
+            E_lst[c] .= E_loc_c
+            O_lst[c, :] .= transpose(O_c)
         end
         E_mean  = sum(E_sum)  / w_sum
         E2_mean = sum(E2_sum) / w_sum
         S2_sum  = sum(S2_sum) / w_sum
-        O_mean  = O_sum  ./ w_sum
-        OE_mean = OE_sum ./ w_sum
-        OO_mean = OO_sum ./ w_sum
 
         E_real = real(ComplexF32(E_mean))
         E_imag = imag(ComplexF32(E_mean))
@@ -293,8 +285,15 @@ function main()
         # D. パラメータ更新のための勾配計算と更新
         ## delta_p = compute_SR_update(nqs_model, ps, st, inputs, E_loc, epoch, epsilon, epsilon2)
 
-        ## SR法
-        delta_p = SR_update(O_mean, OO_mean, OE_mean, E_mean, epoch, epsilon, epsilon2, decay, lambda_min)
+        ## minSR
+        w_lst = w_lst ./ sum(w_lst)
+        O_mean = vec(sum(w_lst .* O_lst; dims=1))
+        sw = sqrt.(w_lst)
+        O_mean = sw .* (O_lst .- reshape(O_mean, 1, :))
+        E_mean = sw .* (E_lst .- E_real)
+        O_mean_real = vcat(real.(O_mean), imag.(O_mean))
+        E_mean_real = vcat(real.(E_mean), imag.(E_mean))
+        delta_p = minSR_update(O_mean_real, E_mean_real, epoch, epsilon, decay, lambda_min)
         ## report("SR")
 
         gnorm = sqrt(sum(abs2, delta_p))

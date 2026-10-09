@@ -1,4 +1,4 @@
-export JULIA_CUDA_HARD_MEMORY_LIMIT:=23GiB
+export JULIA_CUDA_MEMORY_POOL:=none
 
 JULIA ?= julia --project
 K := 5
