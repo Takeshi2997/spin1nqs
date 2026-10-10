@@ -24,15 +24,15 @@ data/ckpt_N12.jld2: data/ckpt_N8.jld2
 	    --init $< --out $@
 
 data/ckpt_N16.jld2: data/ckpt_N12.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 12 --n 12 --c1 $(C1) --n_epochs 20000 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 12 --n 16 --c1 $(C1) --n_epochs 20000 \
 	    --init $< --out $@
 
 data/ckpt_N20.jld2: data/ckpt_N16.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 15 --n 12 --c1 $(C1) --n_epochs 20000 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 15 --n 20 --c1 $(C1) --n_epochs 20000 \
 	    --init $< --out $@
 
 data/ckpt_N24.jld2: data/ckpt_N20.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 18 --n 12 --c1 $(C1) --n_epochs 20000 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 18 --n 24 --c1 $(C1) --n_epochs 20000 \
 	    --init $<
 
 chain: data/ckpt_N12.jld2
