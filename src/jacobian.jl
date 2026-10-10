@@ -119,20 +119,20 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     ## U  = act.(W1 * inputs .+ b1)
     ## H1 = inputs .+ U
     H1  = act.(W1 * inputs .+ b1) 
-    H2  = act.(W2 * H1 .+ b2)
-    ## U  = act.(W2 * H1 .+ b2)
-    ## H2 = U .+ H1
+    ## H2  = act.(W2 * H1 .+ b2)
+    U  = act.(W2 * H1 .+ b2)
+    H2 = U .+ H1
     out = W3 * H2 .+ b3
     logψ = ComplexF32.(out[1, :], out[2, :])
     
     # ---- 逆向き (共役済み) ----
     ḡ2 = ComplexF32.(W3[1, :], -W3[2, :])
-    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
-    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U))
-    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
-    ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 
-    ## D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(U))
+    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
+    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
+    ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
+    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 ## SkipConnection
     D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(H1))
+    ## D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
  
     Xc  = ComplexF32.(inputs); H1c = ComplexF32.(H1); H2c = ComplexF32.(H2)
  

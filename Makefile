@@ -11,27 +11,31 @@ clean:
 	rm -f *.txt *.png *.dat nohup.out
 	rm -rf core
 	
-data/ckpt_N8.jld2:
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max $(K) --n 8 --c1 $(C1) --n_epoch 50000 --epsilon 0.3 --beta 1.2 \
+data/ckpt_N4.jld2:
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 4 --c1 $(C1) --n_epochs 20000 \
 	    --init fresh --out $@
 
+data/ckpt_N8.jld2: data/ckpt_N4.jld2
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 6 --n 8 --c1 $(C1) --n_epochs 20000 \
+	    --init $< --out $@
+
 data/ckpt_N12.jld2: data/ckpt_N8.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max $(K) --n 12 --c1 $(C1) --n_epoch 20000 --epsilon 0.001 --beta 1.1 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 9 --n 12 --c1 $(C1) --n_epochs 20000 \
 	    --init $< --out $@
 
 data/ckpt_N16.jld2: data/ckpt_N12.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max $(K) --n 16 --c1 $(C1) --n_epoch 20000 --epsilon 0.001 --beta 1.0 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 12 --n 12 --c1 $(C1) --n_epochs 20000 \
 	    --init $< --out $@
 
 data/ckpt_N20.jld2: data/ckpt_N16.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max $(K) --n 20 --c1 $(C1) --n_epoch 20000 --epsilon 0.001 --beta 0.9 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 15 --n 12 --c1 $(C1) --n_epochs 20000 \
 	    --init $< --out $@
 
 data/ckpt_N24.jld2: data/ckpt_N20.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max $(K) --n 24 --c1 $(C1) --n_epoch 20000 --epsilon 0.001 --beta 0.8 \
-	    --init $< 
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 18 --n 12 --c1 $(C1) --n_epochs 20000 \
+	    --init $<
 
-chain: data/ckpt_N24.jld2
+chain: data/ckpt_N12.jld2
 
 post:
 	julia ./posts/post.jl

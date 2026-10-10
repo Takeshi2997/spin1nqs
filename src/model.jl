@@ -11,7 +11,7 @@ using ComponentArrays
 using Combinatorics
 
 export build_momentum_nqs, save_nqs_model, load_nqs_model, initialize_model, 
-eval_complex_network, eval_complex_network_real, eval_complex_network_imag, expand_params, 
+eval_complex_network, eval_complex_network_real, eval_complex_network_imag, expand_params, expand_jastrow, 
 JastrowIndex, to_gpu, npair, build_U, jastrow_O, jastrow_logpsi, NqsParametersWithJastrow, 
 save_jastrow, load_jastrow
 
@@ -37,8 +37,8 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
         # 2. 全結合層
         ## Dense(input_features => hidden_dim, tanh),
         Dense(input_features => hidden_dim, tanh_fast), 
-        Dense(hidden_dim => hidden_dim, tanh_fast),
-        ## SkipConnection(Dense(hidden_dim => hidden_dim, tanh), +), 
+        ## Dense(hidden_dim => hidden_dim, tanh_fast),
+        SkipConnection(Dense(hidden_dim => hidden_dim, tanh), +), 
 
         # 3. 出力層
         # 各ウォーカーに対して対数振幅 logΨの実部と虚部を出力
@@ -88,27 +88,29 @@ end
 """
 function expand_params(ps_old::ComponentVector, k_max_old::Int, k_max_new::Int,
                        model_new, rng = Random.default_rng())
-    n_old = 2 * k_max_old + 1        # 3
-    n_new = 2 * k_max_new + 1        # 11
-    offset = k_max_new - k_max_old # 4
+    n_old = 2 * k_max_old + 1
+    n_new = 2 * k_max_new + 1
+    offset = k_max_new - k_max_old
 
     # 通常どおり初期化 (構造を得るため)
     ps_new, st_new = Lux.setup(rng, model_new)
     ps_new = ComponentVector{Float32}(ps_new)
 
     # --- layer_2: Dense(3*n → hidden) ---
-    W_old = ps_old.layer_2.weight          # [hidden, 3*n_old] の view
-    ps_new.layer_2.weight .= 0.0f0         # 新規列 (l=±2..±5) はゼロ
-    for s in 1:3, m in 1:n_old
-        row_old = (s - 1) * n_old + m
-        row_new = (s - 1) * n_new + m + offset
-        ps_new.layer_2.weight[row_new, :] .= W_old[row_old, :]
+    W_old = ps_old.layer_2.weight
+    ps_new.layer_2.weight .= 0.0f0
+    for s in 1:3, m in 1:n_old 
+        col_old = (s - 1) * n_old + m
+        col_new = (s - 1) * n_new + m + offset
+        ps_new.layer_2.weight[:, col_new] .= W_old[:, col_old]
     end
     ps_new.layer_2.bias .= ps_old.layer_2.bias
 
     # --- layer_3: Dense(hidden → 2) はそのまま ---
     ps_new.layer_3.weight .= ps_old.layer_3.weight
     ps_new.layer_3.bias   .= ps_old.layer_3.bias
+    ps_new.layer_4.weight .= ps_old.layer_4.weight
+    ps_new.layer_4.bias   .= ps_old.layer_4.bias
 
     return ps_new, st_new
 end
@@ -131,6 +133,31 @@ function build_U(J::AbstractVector{T}, ji::JastrowIndex) where {T}
     return U
 end
  
+@inline packed(i::Int, j::Int) = j * (j - 1) ÷ 2 + i          # θ 上の番号 (i ≤ j)
+
+# 旧セル番号 → 新セル番号 (スピンブロックごとにずらす)
+@inline function cellmap(c::Int, k_old::Int, k_new::Int)
+    L_old = 2k_old + 1; L_new = 2k_new + 1
+    s = (c - 1) ÷ L_old            # 0,1,2
+    m = (c - 1) % L_old + 1        # 1..L_old
+    return s * L_new + m + (k_new - k_old)
+end
+
+function expand_jastrow(θ_old, k_old::Int, k_new::Int;
+                        s_old::Real = 1, s_new::Real = 1)
+    n_old = 3 * (2k_old + 1)
+    n_new = 3 * (2k_new + 1)
+    θ_new = zeros(Float32, n_new * (n_new + 1) ÷ 2)
+    r = Float32((s_new / s_old)^2)
+    for j in 1:n_old, i in 1:j
+        a = cellmap(i, k_old, k_new)
+        b = cellmap(j, k_old, k_new)
+        θ_new[packed(a, b)] = θ_old[packed(i, j)] * r
+    end
+    
+    return θ_new
+end
+
 # 占有数 → スケール済み入力 [n, cols]
 scaled_input(states::AbstractArray{Float32,3}, s::Real) =
     reshape(states, :, size(states, 3)) ./ Float32(s)
