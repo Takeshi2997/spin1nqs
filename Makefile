@@ -35,7 +35,7 @@ data/ckpt_N24.jld2: data/ckpt_N20.jld2
 	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 18 --n 24 --c1 $(C1) --n_epochs 20000 \
 	    --init $<
 
-chain: data/ckpt_N12.jld2
+chain: data/ckpt_N24.jld2
 
 post:
 	julia ./posts/post.jl

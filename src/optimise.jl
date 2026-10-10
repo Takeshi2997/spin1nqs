@@ -175,14 +175,25 @@ solver = :cholesky  … (T + λI) x = ε
 solver = :eigen     … 固有値 < rcond·λmax を切る擬似逆 (+λ)
 T = O*O' は O と同じデバイス (GPU なら CUBLAS)、解法は CPU で行う
 """
-function minSR_update(O_mean::AbstractMatrix, E_mean::AbstractVector, epoch, epsilon, decay, lambda_min)
-    Tc = Hermitian(Matrix{Float32}(Array(O_mean * O_mean')))
-    R = Vector{Float32}(Array(E_mean))
+function minSR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
+    T = Hermitian(Matrix{Float32}(real.(Array(O * O'))))
+    R = Array(E)
     lambda = max(epsilon * decay^epoch, lambda_min) 
-    x = cholesky(Tc + lambda * I) \ R
-    xd = copyto!(similar(E_mean, Float32, length(x)), x)
+    x = cholesky(T + lambda .* I) \ R
+    xd = copyto!(similar(E, ComplexF32, length(x)), x)
  
-    return O_mean' * xd
+    return real.(transpose(O) * xd)
 end
+
+function SR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
+    S = real.(Array(O' * O))
+    R = real.(Array(transpose(O) * E))
+    lambda = max(epsilon * decay^epoch, lambda_min) 
+    x = cholesky(S + lambda .* I) \ R
+    xd = copyto!(similar(E, Float32, length(x)), x)
+ 
+    return xd
+end
+
 
 end # module Optimise
