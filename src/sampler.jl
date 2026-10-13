@@ -12,16 +12,16 @@ export MCMCSampler, sample_step!, sample_step_uniform!
 MCMCの作業用メモリを管理する構造体
 """
 struct MCMCSampler
-    proposed_states::CuArray{Int32, 3}      # 提案状態を入れるバッファ
+    proposed_states::CuArray{Float32, 3}      # 提案状態を入れるバッファ
     accepted::CuArray{Int32, 1}             # 受理率
     h_factor::CuArray{Float32, 1}           # ヘイスティングス因子
-    current_inputs::CuArray{Int32, 3}       # NN入力用(現在)
-    proposed_inputs::CuArray{Int32, 3}      # NN入力用(提案)
+    current_inputs::CuArray{Float32, 3}       # NN入力用(現在)
+    proposed_inputs::CuArray{Float32, 3}      # NN入力用(提案)
     rand_vals::CuArray{Float32, 1}          # 受容判定用の一様乱数バッファ
 
     function MCMCSampler(basis)
         # ウォーカー数分のメモリを初期化時に「一度だけ」確保する
-        proposed_states = CUDA.zeros(Int32, size(basis.states))
+        proposed_states = CUDA.zeros(Float32, size(basis.states))
         accepted = CUDA.zeros(Int32, basis.n_walkers)
         h_factor = CUDA.ones(Float32, basis.n_walkers)
         current_inputs = CUDA.zeros(Float32, size(basis.states))
@@ -34,10 +34,10 @@ end
 """
 全ウォーカーを並列に1ステップ進める関数
 """
-function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st, beta, p_spin)
+function sample_step!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st, beta)
     # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
-    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, p_spin, basis.threads)
+    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, basis.threads)
     
     # 2. 波動関数の評価 (Model.jl)
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー
@@ -66,11 +66,11 @@ end
 """
 全ウォーカーを並列に1ステップ進める関数
 """
-function sample_step_uniform!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st, beta, p_spin)
+function sample_step_uniform!(sampler::MCMCSampler, basis, model, kmax, n_particle, ps, st, beta)
     
     # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
-    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, p_spin, basis.threads)
+    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, basis.threads)
     
     # 2. 波動関数の評価 (Model.jl)
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー

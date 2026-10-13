@@ -452,14 +452,16 @@ const REF = (
         inputs = rand(Float32, 3, 3, nb) .* 3      # 適当な入力
         inputs_tmp = Float32.(reshape(inputs, 9, :))
      
-        println(inputs)
-        println(inputs_tmp)
-        y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
-        y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
-        y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
-        println(y1)
-        println(y2)
-        println(y3)
+        ## println(inputs)
+        ## println(inputs_tmp)
+        ## y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
+        ## y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
+        ## y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
+        ## y4, st_l4 = Lux.apply(model.layers.layer_4, y3, ps.layer_4, st_l3)
+        ## println(y1)
+        ## println(y2)
+        ## println(y3)
+        ## println(y4)
         Ō, logψ = compute_O_bar(inputs_tmp, ps)
     
         # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
@@ -468,12 +470,11 @@ const REF = (
         J_re = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
         J_im = Zygote.jacobian(f_im, ps)[1]
         O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
-        Ō_ref = conj.(O_true)                                 # 規約B
     
         println(size(Ō))
-        println(size(Ō_ref))
+        println(size(O_true))
 
-        @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
+        @test isapprox(Array(Ō), O_true; rtol = 1e-4)
         # 前向きも一致するか
         @test isapprox(Array(logψ), eval_complex_network(model, inputs, ps, st); rtol = 1e-5)
         println("compute_O_bar: Zygote と一致 ✓")

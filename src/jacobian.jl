@@ -38,13 +38,13 @@ SR に必要な Ō_k(x) = conj(∂_k log ψ(x)) を、Zygote の逆伝播 (出�
 using CUDA
 using NNlib
 using LinearAlgebra
+using Combinatorics
 
 # ★ 活性化関数とその微分 (model.jl に合わせて変更)
 @inline act_relu(z) = relu(z)
 @inline dact_relu(z) = z > 0 ? one(z) : zero(z)
-@inline act(z)  = tanh(z)
+@inline act(z)  = tanh_fast(z)
 @inline dact_from_h(h) = 1 - h^2     # tanh: σ' = 1 − h² (h = σ(z) から計算できる)
-# 例: σ = gelu なら dact は z から計算する形に変える
 
 ## """
 ##     compute_O_bar(inputs, ps) -> (Ō, logψ)
@@ -57,7 +57,7 @@ using LinearAlgebra
 ##   log_psi  :: CuVector{ComplexF32} [nb]            ついでに前向き評価も返す
 ##           (eval_complex_network の呼び直しを省ける)
 ## """
-## function compute_O_bar(inputs::CuMatrix{Float32}, ps)
+## function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
 ##     W1 = ps.layer_2.weight        # [n_h, n_in]
 ##     b1 = ps.layer_2.bias          # [n_h]
 ##     W2 = ps.layer_3.weight        # [2, n_h]
@@ -93,7 +93,7 @@ using LinearAlgebra
 ##     O_W2[2:2:end, :] .= -im .* Hc                    # α=2 行 (偶数行)
 ## 
 ##     # b₂ ブロック: (1, −i) を全サンプルに
-##     O_b2 = CuMatrix{ComplexF32}(undef, 2, nb)
+##     O_b2 = similar(Hc, 2, nb)
 ##     O_b2[1, :] .= 1.0f0 + 0.0f0im
 ##     O_b2[2, :] .= 0.0f0 - 1.0f0im
 ## 
@@ -116,18 +116,23 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     nb  = size(inputs, 2)
  
     # ---- 前向き ----
-    H1  = act_relu.(W1 * inputs .+ b1)               # [n_h, nb]
-    H2  = act.(W2 * H1 .+ b2)                   # [n_b, nb]
-    ## H2  = H1 .+ A                               # [n_h, nb]
-    out = W3 * H2 .+ b3                         # [2, nb]
+    ## U  = act.(W1 * inputs .+ b1)
+    ## H1 = inputs .+ U
+    H1  = act.(W1 * inputs .+ b1) 
+    H2  = act.(W2 * H1 .+ b2)
+    ## U  = act.(W2 * H1 .+ b2)
+    ## H2 = U .+ H1
+    out = W3 * H2 .+ b3
     logψ = ComplexF32.(out[1, :], out[2, :])
     
-    # ---- 逆向き (共役済み) ----
-    ḡ2 = ComplexF32.(W3[1, :], -W3[2, :])                       # [n_h]
-    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(A))                     # [n_h, nb]
-    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))                     # [n_h, nb]
-    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a                  # [n_h, nb]
-    D̄1 = Ḡ1 .* ComplexF32.(dact_relu.(H1))                    # [n_h, nb]
+    # ---- 逆向き ----
+    ḡ2 = ComplexF32.(W3[1, :], W3[2, :])
+    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
+    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
+    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
+    ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 ## SkipConnection
+    D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(H1))
+    ## D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
  
     Xc  = ComplexF32.(inputs); H1c = ComplexF32.(H1); H2c = ComplexF32.(H2)
  
@@ -137,12 +142,13 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     O_b2 = D̄a
     O_W3 = similar(H2c, 2 * n_h2, nb)
     O_W3[1:2:end, :] .= H2c
-    O_W3[2:2:end, :] .= -im .* H2c
+    O_W3[2:2:end, :] .= im .* H2c
     O_b3 = similar(H2c, 2, nb)
     O_b3[1, :] .= 1f0 + 0f0im
-    O_b3[2, :] .= 0f0 - 1f0im
+    O_b3[2, :] .= 0f0 + 1f0im
  
     Ō = vcat(O_W1, O_b1, O_W2, O_b2, O_W3, O_b3)
     return Ō, logψ
 end
+
 

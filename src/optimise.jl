@@ -1,12 +1,13 @@
 module Optimise
 
 using ..Model
+using CUDA
 using Lux
 using Zygote
 using LinearAlgebra
 using Statistics
 
-export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar
+export compute_SR_update, compute_jacobian, SR_update, compare_SR, compute_O_bar, minSR_update
 
 include("jacobian.jl")
 
@@ -167,5 +168,29 @@ function compute_SR_update(model, ps_flat, st, states, E_loc, epoch, epsilon=0.0
 
     return delta_p
 end
+
+"""
+MinSR 更新方向 δθ (θ ← θ - η δθ)
+"""
+function minSR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
+    T = Array(O * O')
+    R = Array(E)
+    lambda = max(epsilon * decay^epoch, lambda_min) 
+    x = (T + lambda .* I) \ R
+    xd = copyto!(similar(E, ComplexF32, length(x)), x)
+ 
+    return O' * xd
+end
+
+function SR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
+    S = Array(O' * O)
+    R = Array(O' * E)
+    lambda = max(epsilon * decay^epoch, lambda_min) 
+    x = (S + lambda .* I) \ R
+    xd = copyto!(similar(E, Float32, length(x)), x)
+ 
+    return xd
+end
+
 
 end # module Optimise
