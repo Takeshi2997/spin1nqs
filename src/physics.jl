@@ -255,6 +255,7 @@ end
 Updates the proposed states based on the current states and transition parameters.
 """
 function _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, id, w)
+    id > size(proposed_states, 3) && return nothing
     # 状態をコピーして更新
     for s in 1:3
         for m in 1:n_modes

@@ -1,55 +1,113 @@
-function blur(
-    states::CuArray{Float32, 3}, 
-    proposed_states::CuArray{Float32, 4},
-    params::SystemParams, 
-    q::Float32, 
-    threads::Int,
-    model, ps, st
-)   
-    n_walkers = size(states, 3)
+@inline function _nchan(s1, s2)
+    (s1 == 2 && s2 == 2) && return 3
+    ((s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)) && return 2
+    abs(s1 - s2) == 1 && return 2
+    return 1
+end
+@inline function _chan(s1, s2, j)             # j-th spin channel, same order as _scattering_kernel!
+    j == 1 && return (s1, s2)
+    (s1 == 2 && s2 == 2) && return j == 2 ? (1, 3) : (3, 1)
+    ((s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)) && return (2, 2)
+    return (s2, s1)
+end
 
-    ## 散乱カーネルを用いて提案状態候補を作成
-    proposed_states .= CUDA.zeros(Float32, size(proposed_states))
-    blocks = ceil(Int, n_walkers / threads)
-    @cuda threads=threads blocks=blocks _scattering_kernel!(
-        states, 
-        proposed_states, 
-        params.k_max,
-    )
+# T[b] = 候補リストの長さ（_scattering_kernel! が書く遷移数と一致）
+function _count_transitions!(T, S, k_max::Int)   # S :: [n_modes, 3, B]
+    n_modes = 2k_max + 1
+    b = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if b <= size(S, 3)
+        t = Int32(0)
+        for m1 in 1:n_modes, s1 in 1:3
+            S[m1, s1, b] == 0 && continue
+            for m2 in 1:n_modes, s2 in 1:3
+                n2 = S[m2, s2, b]
+                n2 == 0 && continue
+                (m1 == m2 && s1 == s2 && n2 < 2) && continue
+                t += Int32((n_modes - abs(m1 + m2 - 2(k_max + 1))) * _nchan(s1, s2))
+            end
+        end
+        T[b] = t
+    end
+    return nothing
+end
 
-    ## 提案状態候補のインデックス・要素数を計算
-    indices = CUDA.zeros(Int32, size(proposed_states, 3), n_walkers)
-    n_conn = CUDA.zeros(Int32, n_walkers)
-    @cuda threads=threads blocks=blocks _get_connected_indices!(
-        indices, 
-        n_conn, 
-        proposed_states,
-        params.k_max
-    )
+# 確率 q で、x の候補リストの一様な1項を直接適用（全列挙しない）
+function _pick_blurred!(Y, X, Tx, R, q::Float32, k_max::Int)
+    n_modes = 2k_max + 1
+    w = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    if w <= size(X, 3)
+        for s in 1:3, m in 1:n_modes
+            Y[m, s, w] = X[m, s, w]
+        end
+        (R[1, w] >= q || Tx[w] == 0) && return nothing
+        target = min(trunc(Int32, R[2, w] * Tx[w]) + Int32(1), Tx[w])
+        acc = Int32(0)
+        for m1 in 1:n_modes, s1 in 1:3
+            X[m1, s1, w] == 0 && continue
+            for m2 in 1:n_modes, s2 in 1:3
+                n2 = X[m2, s2, w]
+                n2 == 0 && continue
+                (m1 == m2 && s1 == s2 && n2 < 2) && continue
+                k1 = m1 - k_max - 1; k2 = m2 - k_max - 1
+                nc = _nchan(s1, s2)
+                cnt = Int32((n_modes - abs(k1 + k2)) * nc)
+                if target <= acc + cnt
+                    loc = target - acc - 1
+                    dq  = max(-k_max - k1, k2 - k_max) + loc ÷ nc
+                    a, b = _chan(s1, s2, loc % nc + 1)
+                    Y[m1, s1, w] -= 1; Y[m2, s2, w] -= 1
+                    Y[k1 + dq + k_max + 1, a, w] += 1
+                    Y[k2 - dq + k_max + 1, b, w] += 1
+                    return nothing
+                end
+                acc += cnt
+            end
+        end
+    end
+    return nothing
+end
 
-    ## 候補から一様ランダムに一つ選択
-    blurred_states = CUDA.zeros(Float32, size(states))
-    blurred_states .= states
-    rand_vals = CUDA.rand(Float32, 2, n_walkers)
-    @cuda threads=threads blocks=blocks _proposed_blurred_states!(
-        blurred_states, 
-        proposed_states, 
-        indices, 
-        n_conn, 
-        rand_vals, 
-        q, params.k_max
-    )
- 
-    ## wを計算
-    log_psi_real_prop = eval_complex_network_real(model, blurred_states, ps, st)
+"""
+戻り値: (blurred_states, ω, proposed_states, n_conn, log_psi_real_nb)
+proposed_states は x' の近傍なので、そのまま x' での局所エネルギー計算に使える。
+"""
+function blur(states::CuArray{Float32,3}, proposed_states::CuArray{Float32,4},
+              params::SystemParams, q::Float32, threads::Int, model, ps, st)
+    B = size(states, 3); MAXT = size(proposed_states, 3)
+    k_max = params.k_max; n_modes = params.n_modes
+    blocks = cld(B, threads)
 
-    flat_blurred = reshape(proposed_states, params.n_modes, 3, :)
-    flat_log_psi_real_blurred = eval_complex_network_real(model, flat_blurred, ps, st)
-    log_psi_real_blurred = reshape(flat_log_psi_real_blurred, size(proposed_states, 3), :)
+    # 1. x の遷移数 → t 番目の遷移を直接適用して x'
+    Tx = CUDA.zeros(Int32, B)
+    @cuda threads=threads blocks=blocks _count_transitions!(Tx, states, k_max)
+    blurred = similar(states)
+    R = CUDA.rand(Float32, 2, B)
+    @cuda threads=threads blocks=blocks _pick_blurred!(blurred, states, Tx, R, q, k_max)
 
-    w_deno = (1 - q) .+ q ./ n_conn .* dropdims(sum(exp.(2 .* (log_psi_real_blurred .- reshape(log_psi_real_prop, 1, :))) .* (indices .> 0), dims=1), dims=1)
+    # 2. x' の近傍を列挙（局所エネルギーと共用）。n_conn = T(x')
+    fill!(proposed_states, 0f0)
+    @cuda threads=threads blocks=blocks _scattering_kernel!(blurred, proposed_states, k_max)
+    n_conn = CUDA.zeros(Int32, B)
+    @cuda threads=threads blocks=blocks _count_transitions!(n_conn, blurred, k_max)
+    @assert maximum(n_conn) <= MAXT "MAX_TRANSITIONS が不足"
 
-    return blurred_states, 1 ./ w_deno
+    # 3. 各近傍 y の T(y)
+    flat = reshape(proposed_states, n_modes, 3, :)
+    Tnb = CUDA.zeros(Int32, size(flat, 3))
+    @cuda threads=threads blocks=cld(size(flat, 3), threads) _count_transitions!(Tnb, flat, k_max)
+    Tnb = reshape(Tnb, MAXT, B)
+
+    # 4. 振幅（実部のみで足りる）
+    lp0 = eval_complex_network_real(model, blurred, ps, st)
+    lpn = reshape(eval_complex_network_real(model, flat, ps, st), MAXT, B)
+
+    # 5. ω = 1 / [(1-q) + q Σ_{リスト全項} |ψ(y)/ψ(x')|² / T(y)]   （自己ループ込み）
+    valid = reshape(1:MAXT, :, 1) .<= reshape(n_conn, 1, :)
+    d   = ifelse.(valid, 2f0 .* (lpn .- reshape(lp0, 1, :)), -Inf32)   # exp の前でマスク
+    trm = ifelse.(valid, exp.(d) ./ max.(Tnb, Int32(1)), 0f0)
+    w   = 1f0 ./ ((1 - q) .+ q .* vec(sum(trm; dims = 1)))           # Inf → ω=0 で正しい極限
+
+    return blurred, w
 end
 
 """
