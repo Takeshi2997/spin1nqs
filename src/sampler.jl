@@ -122,11 +122,11 @@ end
 全ウォーカーを並列に1ステップ進める関数
 accepted ratio計算
 """
-function sample_step!(sampler::MCMCSampler, basis, n_accepted, model, kmax, n_particle, ps, st, beta, p_spin)
+function sample_step!(sampler::MCMCSampler, basis, n_accepted, model, kmax, n_particle, ps, st, beta)
     
     # 1. 提案状態の生成
     # basis.states に2体散乱を適用し、結果を sampler.proposed_states に書き込む
-    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, p_spin, basis.threads)
+    Hilbert.generate_proposal!(basis.states, sampler.proposed_states, sampler.h_factor, kmax, n_particle, basis.threads)
     
     # 2. 波動関数の評価 (Model.jl)
     # NNに入力するため Int32 -> Float32 へ型変換してバッファへコピー
