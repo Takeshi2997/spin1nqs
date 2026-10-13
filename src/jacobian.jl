@@ -125,8 +125,8 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     out = W3 * H2 .+ b3
     logψ = ComplexF32.(out[1, :], out[2, :])
     
-    # ---- 逆向き (共役済み) ----
-    ḡ2 = ComplexF32.(W3[1, :], -W3[2, :])
+    # ---- 逆向き ----
+    ḡ2 = ComplexF32.(W3[1, :], W3[2, :])
     D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
     ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
     Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
@@ -142,10 +142,10 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     O_b2 = D̄a
     O_W3 = similar(H2c, 2 * n_h2, nb)
     O_W3[1:2:end, :] .= H2c
-    O_W3[2:2:end, :] .= -im .* H2c
+    O_W3[2:2:end, :] .= im .* H2c
     O_b3 = similar(H2c, 2, nb)
     O_b3[1, :] .= 1f0 + 0f0im
-    O_b3[2, :] .= 0f0 - 1f0im
+    O_b3[2, :] .= 0f0 + 1f0im
  
     Ō = vcat(O_W1, O_b1, O_W2, O_b2, O_W3, O_b3)
     return Ō, logψ

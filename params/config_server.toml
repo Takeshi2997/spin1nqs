@@ -16,11 +16,11 @@ n_epochs = 20000
 learning_rate = 0.01
 epsilon = 0.1
 epsilon2 = 0.1
-decay = 0.999
-lambda_min = 0.00001
+decay = 0.997
+lambda_min = 0.0001
 clipping_threshold = 10.0
 beta = 0.0
-q = 0.3
+q = 0.7
 
 [estimate]
 chunk = 256
@@ -29,7 +29,7 @@ n_thermal = 1024
 n_steps = 32
 n_interval = 16
 beta = 0.0
-q = 0.3
+q = 0.7
 
 [model]
 hidden_dim = 128

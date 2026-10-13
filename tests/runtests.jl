@@ -470,12 +470,11 @@ const REF = (
         J_re = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
         J_im = Zygote.jacobian(f_im, ps)[1]
         O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
-        Ō_ref = conj.(O_true)                                 # 規約B
     
         println(size(Ō))
-        println(size(Ō_ref))
+        println(size(O_true))
 
-        @test isapprox(Array(Ō), Ō_ref; rtol = 1e-4)
+        @test isapprox(Array(Ō), O_true; rtol = 1e-4)
         # 前向きも一致するか
         @test isapprox(Array(logψ), eval_complex_network(model, inputs, ps, st); rtol = 1e-5)
         println("compute_O_bar: Zygote と一致 ✓")

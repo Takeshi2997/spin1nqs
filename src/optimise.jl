@@ -171,25 +171,22 @@ end
 
 """
 MinSR 更新方向 δθ (θ ← θ - η δθ)
-solver = :cholesky  … (T + λI) x = ε
-solver = :eigen     … 固有値 < rcond·λmax を切る擬似逆 (+λ)
-T = O*O' は O と同じデバイス (GPU なら CUBLAS)、解法は CPU で行う
 """
 function minSR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
-    T = Hermitian(Matrix{Float32}(real.(Array(O * O'))))
+    T = Array(O * O')
     R = Array(E)
     lambda = max(epsilon * decay^epoch, lambda_min) 
-    x = cholesky(T + lambda .* I) \ R
+    x = (T + lambda .* I) \ R
     xd = copyto!(similar(E, ComplexF32, length(x)), x)
  
-    return real.(transpose(O) * xd)
+    return O' * xd
 end
 
 function SR_update(O::AbstractMatrix, E::AbstractVector, epoch, epsilon, decay, lambda_min)
-    S = real.(Array(O' * O))
-    R = real.(Array(transpose(O) * E))
+    S = Array(O' * O)
+    R = Array(O' * E)
     lambda = max(epsilon * decay^epoch, lambda_min) 
-    x = cholesky(S + lambda .* I) \ R
+    x = (S + lambda .* I) \ R
     xd = copyto!(similar(E, Float32, length(x)), x)
  
     return xd
