@@ -35,8 +35,7 @@ function build_momentum_nqs(k_max::Int; hidden_dim::Int=32)
         FlattenLayer(), 
 
         # 2. 全結合層
-        ## Dense(input_features => hidden_dim, tanh),
-        Dense(input_features => hidden_dim, tanh_fast), 
+        Dense(input_features => hidden_dim, relu), 
         Dense(hidden_dim => hidden_dim, tanh_fast),
         ## SkipConnection(Dense(hidden_dim => hidden_dim, tanh), +), 
 
@@ -63,7 +62,7 @@ end
 function eval_complex_network(model, inputs, ps::ComponentVector, st)
     # 入力は [n_modes, 3, n_walkers] の形状を想定
     # Lux.apply は [2, n_walkers] の出力を返す（1行目: log|Ψ|の実部、2行目: log|Ψ|の虚部）
-    outputs, _ = Lux.apply(model, inputs, ps, st)
+    outputs, _ = Lux.apply(model, log.(1 .+ inputs), ps, st)
     
     # 複素数の波動関数 Ψ を構築
     log_psi_real = outputs[1, :]
@@ -186,7 +185,7 @@ end
 function eval_complex_network(model, inputs, nqs_params::NqsParametersWithJastrow, st)
     # 入力は [n_modes, 3, n_walkers] の形状を想定
     # Lux.apply は [2, n_walkers] の出力を返す（1行目: log|Ψ|の実部、2行目: log|Ψ|の虚部）
-    outputs, _ = Lux.apply(model, inputs, nqs_params.nqs_params, st)
+    outputs, _ = Lux.apply(model, log.(1 .+ inputs), nqs_params.nqs_params, st)
     
     # 複素数の波動関数 Ψ を構築
     log_psi_real = outputs[1, :]

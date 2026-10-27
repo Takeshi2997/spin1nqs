@@ -14,14 +14,14 @@ using .Exact
 
 function main()
     @printf("=== スピン1ボソン 厳密対角化 ===\n")
-    k_max = 3
+    k_max = 5
     n_modes = 2 * k_max + 1
-    n_particles = 4
+    n_particles = 6
     L_box = n_particles * 2 * π / 4
     hbar2_over_2m = 1.0
     c0 = 0.0
     c1 = 1.0
-    target_Mz = 2
+    target_Mz = 0
     target_P = 0
     constrain_P = true
     
@@ -37,8 +37,8 @@ function main()
 
     dirname = "./data/" * Dates.format(now(), "yyyymmdd") * "_exact"
     mkpath(dirname)
-    filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P).txt"
-    logfilename = dirname * "/log_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P).txt"
+    filename = dirname * "/space_correlation_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P)_L$(@sprintf("%.3f", L_box)).txt"
+    logfilename = dirname * "/log_N$(n_particles)_k$(k_max)_c0$(c0)_c1$(@sprintf("%.3f", c1))_Mz$(target_Mz)_P$(target_P)_L$(@sprintf("%.3f", L_box)).txt"
 
     open(filename, "w") do io
         @printf(io, "k_max = %d (モード数 %d), N = %d\n", k_max, n_modes, n_particles)

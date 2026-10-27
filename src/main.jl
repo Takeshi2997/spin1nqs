@@ -141,7 +141,9 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20261006/nqs_model_2906_epoch3000.jld2")
+    ## ps_cpu, st_cpu = load_nqs_model("./data/n_scan_20261015/nqs_model_18818_epoch30000.jld2")
+    ## ps_old, st_old = load_nqs_model("./data/n_scan_20261015/nqs_model_18818_epoch30000.jld2")
+    ## ps_cpu, st_cpu = expand_params(ps_old, k_max - 1, k_max, nqs_model, rng)
     ## e_start = 3001
     nqs_length = Lux.parameterlength(ps_cpu)
 
@@ -152,7 +154,9 @@ function main()
     ## Jastrow用のインデックス
     ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
     J = CUDA.zeros(Float32, npair(ji))
-    ## J = load_jastrow("./data/20261006/jastrow_780_epoch3000.jld2") |> cu
+    ## J = load_jastrow("./data/n_scan_20261015/jastrow_120_epoch30000.jld2") |> cu
+    ## J_old = load_jastrow("./data/n_scan_20261015/jastrow_120_epoch30000.jld2")
+    ## J = expand_jastrow(J_old, k_max - 1, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
     U = build_U(J, ji)
     n_length = nqs_length + npair(ji)
 

@@ -207,9 +207,9 @@ function main()
         ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     else
         ps_old, st_old = load_nqs_model(initfilename)
-        ps_cpu, st_cpu = expand_params(ps_old, k_max - 3, k_max, nqs_model)
+        ps_cpu, st_cpu = expand_params(ps_old, k_max - 1, k_max, nqs_model)
         J_old = load_jastrow(j_initfilename)
-        J = expand_jastrow(J_old, k_max - 3, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
+        J = expand_jastrow(J_old, k_max - 1, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
         rm(initfilename)
         rm(j_initfilename)
     end

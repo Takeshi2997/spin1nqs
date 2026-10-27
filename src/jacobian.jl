@@ -107,6 +107,7 @@ using Combinatorics
 #   戻り値: Ō [n_params, nb] ComplexF32,  logψ [nb] ComplexF32
 # ============================================================
 function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
+    inputs = log.(1 .+ inputs)
     W1 = ps.layer_2.weight;  b1 = ps.layer_2.bias
     W2 = ps.layer_3.weight;  b2 = ps.layer_3.bias
     W3 = ps.layer_4.weight;  b3 = ps.layer_4.bias
@@ -118,7 +119,7 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     # ---- 前向き ----
     ## U  = act.(W1 * inputs .+ b1)
     ## H1 = inputs .+ U
-    H1  = act.(W1 * inputs .+ b1) 
+    H1  = act_relu.(W1 * inputs .+ b1) 
     H2  = act.(W2 * H1 .+ b2)
     ## U  = act.(W2 * H1 .+ b2)
     ## H2 = U .+ H1
@@ -131,7 +132,7 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
     Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
     ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 ## SkipConnection
-    D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(H1))
+    D̄1 = Ḡ1 .* ComplexF32.(dact_relu.(H1))
     ## D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
  
     Xc  = ComplexF32.(inputs); H1c = ComplexF32.(H1); H2c = ComplexF32.(H2)
