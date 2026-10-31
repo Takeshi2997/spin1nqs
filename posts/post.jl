@@ -10,7 +10,22 @@ using Printf
 using Dates
 using Statistics
 
-# 自作モジュールの読み込み
+const start_ref = Ref{UInt64}(time_ns())
+function reset_start!()
+    start_ref[] = time_ns()
+end
+function get_elapsed()
+    return (time_ns() - start_ref[]) / 1e6
+end
+reset_start!()
+
+function report(label)
+    CUDA.synchronize()   # 非同期実行の完了を待つ (重要)
+    time = get_elapsed()
+    @printf("%-30s, Elapsed time %5.3f ms\n", label, time)
+    reset_start!()
+end
+
 include("../src/hilbert.jl")
 ## include("../tests/ed_from_kernel.jl")
 include("../src/model.jl")
@@ -23,11 +38,11 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "n_scan_20261014"
-    srcdir = "./data/" * srcday
-    epoch = 30000
-    filename = "/nqs_model_21890_epoch" * string(epoch) * ".jld2"
-    filename_jastrow = "/jastrow_780_epoch" * string(epoch) * ".jld2"
+    srcday = "n_scan_20261028"
+    srcdir = "./data/.old/" * srcday
+    epoch = 50000
+    filename = "/nqs_model_18818_epoch" * string(epoch) * ".jld2"
+    filename_jastrow = "/jastrow_120_epoch" * string(epoch) * ".jld2"
 
     dirname = "./data/" * srcday * "_estimated"
     if !isdir(dirname)
@@ -149,22 +164,24 @@ function main()
    
     println("=== 推定を開始します ===")
     
-    w_lst = CUDA.zeros(Float32, n_total)
+    logw_lst = CUDA.zeros(Float32, n_total)
     for c in Iterators.partition(1:n_total, chunk)
-        blurred_states, w = blur(
-            all_states[:, :, c], 
-            blurred_proposed_states, 
-            params, 
-            q, 
-            basis.threads, 
-            nqs_model, ps, st
-        )
-        all_states[:, :, c] .= blurred_states
+        ## all_states[:, :, c], logw = blur(
+        ##     all_states[:, :, c], 
+        ##     blurred_proposed_states, 
+        ##     params, 
+        ##     q, 
+        ##     basis.threads, 
+        ##     nqs_model, ps, st
+        ## ) ## Blur
         inputs_c = all_states[:, :, c]
         outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
         all_outputs[c] .= outputs_c
-        w_lst[c] .= w
+        logw = beta .* real.(outputs_c) ## Reweighting
+        logw_lst[c] = logw
     end
+    logw_lst .-= maximum(logw_lst)
+    w_lst = exp.(logw_lst)
     w_sum = sum(w_lst)
     w2 = w_sum^2 / sum(w_lst.^2) / n_total
 

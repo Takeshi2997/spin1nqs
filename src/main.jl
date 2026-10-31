@@ -181,7 +181,7 @@ function main()
     ## report("Initialize")
     # === 4. メイン学習ループ ===
     n_clipping = 0
-    for epoch in e_start:30 ## n_epochs
+    for epoch in e_start:n_epochs
         ## println("########## Epoch Start! ##########")
         ## prof = CUDA.@profile begin
         # A. サンプリングとデータ収集
@@ -209,7 +209,7 @@ function main()
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             all_outputs[c] .= outputs_c
-            logw = beta .* real.(outputs_c) # Reweighting
+            logw = beta .* real.(outputs_c) ## Reweighting
             logw_lst[c] = logw
         end
         logw_lst .-= maximum(logw_lst)
@@ -269,8 +269,8 @@ function main()
 
         # C. 進捗の表示
        if epoch % log_iter == 0 || epoch == e_start
-            @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
-            epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
+            @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f \n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
+            epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
                 @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.8f, %4d,\n", 
                 epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, w2, n_clipping)

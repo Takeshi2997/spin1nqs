@@ -1,6 +1,6 @@
 [system]
-k_max = 4
-n_particles = 16
+k_max = 2
+n_particles = 8
 hbar2_over_2m = 1.0
 c0 = 0.0
 c1 = 0.2

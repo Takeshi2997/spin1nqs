@@ -77,39 +77,39 @@ const REF = (
     ),
 )
 
-## # ============================================================
-## # 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
-## # ------------------------------------------------------------
-## # 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
-## #       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
-## #       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
-## #       ことを恒常的に保証する。
-## # ============================================================
-## @testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
-##     basis = enumerate_basis(6)   # Sz=0, P=0
-##     dim = length(basis)
-##     @test dim == 23607
-## 
-##     H_indep = build_H_independent(basis)
-## 
-##     # 独立実装のエルミート性と参照値
-##     @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
-##     
-##     vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
-##                                 issymmetric = true,
-##                                 krylovdim = 60,
-##                                 maxiter = 500,
-##                                 tol = 1e-12)
-##     @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
-##     @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
-## 
-##     if GPU_OK
-##         H_kernel = build_H_from_kernel(basis)
-##         # Float32 カーネルなので許容誤差は 1e-6 オーダー
-##         @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
-##         @test maximum(abs.(H_kernel - H_indep)) < 1e-5
-##     end
-## end
+# ============================================================
+# 1. ハミルトニアン: カーネル vs 独立実装 (回帰の本丸)
+# ------------------------------------------------------------
+# 履歴: 打ち切り規約の不一致 (|q|<=k_max vs 2k_max) が共同研究者との
+#       6e-4 のずれ、および「ITCIが変分原理を破る」誤解の原因だった。
+#       このテストは physics.jl の行列要素が第一原理 (F·F) と一致する
+#       ことを恒常的に保証する。
+# ============================================================
+@testset "ハミルトニアン回帰 (k_max=5, 次元23067)" begin
+    basis = enumerate_basis(6)   # Sz=0, P=0
+    dim = length(basis)
+    @test dim == 23607
+
+    H_indep = build_H_independent(basis)
+
+    # 独立実装のエルミート性と参照値
+    @test maximum(abs.(H_indep - transpose(H_indep))) < 1e-12
+    
+    vals, vecs, info = eigsolve(H_indep, dim, 2, :SR;
+                                issymmetric = true,
+                                krylovdim = 60,
+                                maxiter = 500,
+                                tol = 1e-12)
+    @test isapprox(vals[1], REF.k5.E0; atol = 1e-9)
+    @test isapprox(vals[2], REF.k5.E1; atol = 1e-9)
+
+    if GPU_OK
+        H_kernel = build_H_from_kernel(basis)
+        # Float32 カーネルなので許容誤差は 1e-6 オーダー
+        @test maximum(abs.(H_kernel - transpose(H_kernel))) < 1e-5
+        @test maximum(abs.(H_kernel - H_indep)) < 1e-5
+    end
+end
 ## 
 ## # ============================================================
 ## # 2. 参照観測量 (独立EDの基底状態から)
@@ -435,53 +435,53 @@ const REF = (
 ##     end
 ## end
 
-# ============================================================
-# 検証: Zygote との一致 (runtests.jl に移植すること)
-# ------------------------------------------------------------
-# 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
-# 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
-# ============================================================
-@testset "Jacobianテスト" begin
-    rng = Xoshiro(42)
-    model = build_momentum_nqs(1, hidden_dim=8)
-    ps_tmp, st = initialize_model(model, rng)
-    ps = ComponentArray(ps_tmp)
- 
-    function test_O_bar(model, ps, st; nb = 2)
-        rng = Random.default_rng()
-        inputs = rand(Float32, 3, 3, nb) .* 3      # 適当な入力
-        inputs_tmp = Float32.(reshape(inputs, 9, :))
-     
-        ## println(inputs)
-        ## println(inputs_tmp)
-        ## y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
-        ## y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
-        ## y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
-        ## y4, st_l4 = Lux.apply(model.layers.layer_4, y3, ps.layer_4, st_l3)
-        ## println(y1)
-        ## println(y2)
-        ## println(y3)
-        ## println(y4)
-        Ō, logψ = compute_O_bar(inputs_tmp, ps)
-    
-        # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
-        f_re(p) = eval_complex_network_real(model, inputs, p, st)
-        f_im(p) = eval_complex_network_imag(model, inputs, p, st)
-        J_re = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
-        J_im = Zygote.jacobian(f_im, ps)[1]
-        O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
-    
-        println(size(Ō))
-        println(size(O_true))
-
-        @test isapprox(Array(Ō), O_true; rtol = 1e-4)
-        # 前向きも一致するか
-        @test isapprox(Array(logψ), eval_complex_network(model, inputs, ps, st); rtol = 1e-5)
-        println("compute_O_bar: Zygote と一致 ✓")
-    end
-
-    test_O_bar(model, ps, st)
-end
+## # ============================================================
+## # 検証: Zygote との一致 (runtests.jl に移植すること)
+## # ------------------------------------------------------------
+## # 「動くけど間違う」対策。特に (a) 活性化微分, (b) ComponentVector の
+## # 順序, (c) 規約Bの共役, の3点はこのテストでしか保証できない。
+## # ============================================================
+## @testset "Jacobianテスト" begin
+##     rng = Xoshiro(42)
+##     model = build_momentum_nqs(1, hidden_dim=8)
+##     ps_tmp, st = initialize_model(model, rng)
+##     ps = ComponentArray(ps_tmp)
+##  
+##     function test_O_bar(model, ps, st; nb = 2)
+##         rng = Random.default_rng()
+##         inputs = rand(Float32, 3, 3, nb) .* 3      # 適当な入力
+##         inputs_tmp = Float32.(reshape(inputs, 9, :))
+##      
+##         ## println(inputs)
+##         ## println(inputs_tmp)
+##         ## y1, st_l1 = Lux.apply(model.layers.layer_1, inputs, ps.layer_1, st.layer_1)
+##         ## y2, st_l2 = Lux.apply(model.layers.layer_2, y1, ps.layer_2, st_l1)
+##         ## y3, st_l3 = Lux.apply(model.layers.layer_3, y2, ps.layer_3, st_l2)
+##         ## y4, st_l4 = Lux.apply(model.layers.layer_4, y3, ps.layer_4, st_l3)
+##         ## println(y1)
+##         ## println(y2)
+##         ## println(y3)
+##         ## println(y4)
+##         Ō, logψ = compute_O_bar(inputs_tmp, ps)
+##     
+##         # Zygote 側: 実部・虚部の Jacobian を別々に (既存 optimise.jl と同じ方法)
+##         f_re(p) = eval_complex_network_real(model, inputs, p, st)
+##         f_im(p) = eval_complex_network_imag(model, inputs, p, st)
+##         J_re = Zygote.jacobian(f_re, ps)[1]                 # [nb, n_params]
+##         J_im = Zygote.jacobian(f_im, ps)[1]
+##         O_true = transpose(J_re) .+ im .* transpose(J_im)     # 真の微分 [n_params, nb]
+##     
+##         println(size(Ō))
+##         println(size(O_true))
+## 
+##         @test isapprox(Array(Ō), O_true; rtol = 1e-4)
+##         # 前向きも一致するか
+##         @test isapprox(Array(logψ), eval_complex_network(model, inputs, ps, st); rtol = 1e-5)
+##         println("compute_O_bar: Zygote と一致 ✓")
+##     end
+## 
+##     test_O_bar(model, ps, st)
+## end
 
 ## # ============================================================
 ## # テスト

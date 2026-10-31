@@ -3,8 +3,8 @@ module Physics
 using CUDA
 using Lux
 using ..Model
-# using ..Hilbert # 必要に応じて
 export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix, blur
+import Main: report 
 
 """
 系の物理パラメータをまとめる構造体
@@ -107,8 +107,7 @@ function compute_local_energy(
 
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
-    flat_proposed = reshape(proposed_states, params.n_modes, 3, :)
-    flat_proposed = flat_proposed[:, :, 1:c * n_walkers]
+    flat_proposed = reshape(proposed_states[:, :, 1:c, :], params.n_modes, 3, :)
     
     # (C) ネットワークで一括評価
     flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
@@ -154,13 +153,20 @@ function _scattering_kernel!(
         for m1 in 1:n_modes, s1 in 1:3
             n1 = states[m1, s1, w]
             if n1 == 0; continue; end
+            c1i = (m1 - 1) * 3 + s1
             
             for m2 in 1:n_modes, s2 in 1:3
+                c2i = (m2 - 1) * 3 + s2
+                if c2i < c1i; continue; end
                 n2 = states[m2, s2, w]
                 if n2 == 0; continue; end
-                
-                # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
-                if (m1 == m2 && s1 == s2) && n2 < 2; continue; end
+                same = (c1i == c2i)
+                if same && n2 < 2; continue; end
+                ## n2 = states[m2, s2, w]
+                ## if n2 == 0; continue; end
+                ## 
+                ## # 同一モード・同一スピンから2つ選ぶ場合は、2個以上いる必要がある
+                ## if (m1 == m2 && s1 == s2) && n2 < 2; continue; end
                 
                 # 現在の運動量
                 k1 = m1 - k_max - 1
@@ -171,6 +177,9 @@ function _scattering_kernel!(
  
                 # 運動量移動 q のループ
                 for q in -2*k_max:2*k_max
+                    if same && q < 0; continue; end
+                    pw = (same && q == 0) ? 0.5f0 : 1f0
+
                     # 散乱後の運動量
                     k1_new = k1 + q
                     k2_new = k2 - q
@@ -181,11 +190,11 @@ function _scattering_kernel!(
                     if m1_new >= 1 && m1_new <= n_modes && m2_new >= 1 && m2_new <= n_modes
                                                
                         # 状態をコピーして更新
-                        _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1, m2_new, s2, transition_idx, w)
+                        _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1, m2_new, s2, transition_idx, w)
                         
                         # 行列要素の計算
                         bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1, m2_new, s2, transition_idx, w)
-                        matrix_elements[transition_idx, w] = (v0 + v1 * (s1 - 2) * (s2 - 2)) / 2 * bose_factor
+                        matrix_elements[transition_idx, w] = (v0 + v1 * (s1 - 2) * (s2 - 2)) * pw * bose_factor
 
                         transition_idx += 1
 
@@ -194,35 +203,37 @@ function _scattering_kernel!(
                             s1_new, s2_new = 1, 3
                             
                             # 状態をコピーして更新
-                            _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                            _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
 
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 * bose_factor
 
                             transition_idx += 1
 
-                            s1_new, s2_new = 3, 1
-                            
-                            # 状態をコピーして更新
-                            _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                            if !(same && q == 0)   
+                                s1_new, s2_new = 3, 1
+                                
+                                # 状態をコピーして更新
+                                _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
 
-                            # 行列要素の計算
-                            bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
+                                # 行列要素の計算
+                                bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                                matrix_elements[transition_idx, w] = v1 * bose_factor
 
-                            transition_idx += 1
+                                transition_idx += 1
+                            end
                             
                         # (1, -1) <--> (0, 0), (-1, 1) <--> (0, 0) の遷移
                         elseif (s1 == 1 && s2 == 3) || (s1 == 3 && s2 == 1)
                             s1_new, s2_new = 2, 2
                             
                             # 状態をコピーして更新
-                            _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                            _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
                             
                             # 行列要素の計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 * bose_factor
 
                             transition_idx += 1
                             
@@ -231,11 +242,11 @@ function _scattering_kernel!(
                             s1_new, s2_new = s2, s1
                             
                             # 状態をコピーして更新
-                            _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
+                            _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
 
                             # スピン交換用のボース統計因子を計算
                             bose_factor = _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_new, m2_new, s2_new, transition_idx, w)
-                            matrix_elements[transition_idx, w] = v1 / 2 * bose_factor
+                            matrix_elements[transition_idx, w] = v1 * bose_factor
 
                             transition_idx += 1
                         end
@@ -256,6 +267,17 @@ function _scattering_kernel!(
     end
     
     return nothing
+end
+
+"""
+Apply the changes to the proposed states.
+"""
+function _apply_transition!(proposed_states, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, id, w)
+    id > size(proposed_states, 3) && return nothing
+    proposed_states[m1, s1, id, w] -= Int32(1)
+    proposed_states[m2, s2, id, w] -= Int32(1)
+    proposed_states[m1_new, s1_new, id, w] += Int32(1)
+    proposed_states[m2_new, s2_new, id, w] += Int32(1)
 end
 
 """
