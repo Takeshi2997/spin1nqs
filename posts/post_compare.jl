@@ -15,8 +15,6 @@ using StatsBase
 include("../src/hilbert.jl")
 include("../tests/ed_from_kernel.jl")
 include("../src/sampler.jl")
-include("../src/physics.jl")
-include("../src/model.jl")
 
 using .Hilbert
 using .Model

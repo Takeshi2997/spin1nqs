@@ -4,8 +4,7 @@ using CUDA
 using Lux
 using ..Model
 # using ..Hilbert # 必要に応じて
-
-export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix
+export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlation, compute_local_S2, compute_local_density_matrix, blur
 
 """
 系の物理パラメータをまとめる構造体
@@ -13,6 +12,7 @@ export SystemParams, PhysicsBuffer, compute_local_energy, compute_local_correlat
 struct SystemParams
     k_max::Int
     n_modes::Int
+    L_box::Float32
     hbar2_over_2m::Float32
     
     # 相互作用パラメータ
@@ -24,14 +24,14 @@ end
 局所エネルギー計算用のGPUメモリを使い回すためのバッファ
 """
 struct PhysicsBuffer
-    proposed_states::CuArray{Int32, 4}      # [n_modes, 3, MAX_TRANSITIONS, n_walkers]
+    proposed_states::CuArray{Float32, 4}      # [n_modes, 3, MAX_TRANSITIONS, n_walkers]
     matrix_elements::CuArray{Float32, 2}    # [MAX_TRANSITIONS, n_walkers]
     
     function PhysicsBuffer(k_max::Int, max_transitions::Int, n_walkers::Int)
         n_modes = 2 * k_max + 1
         
         # 最初に1回だけ巨大なGPUメモリを確保する
-        proposed_states = CUDA.zeros(Int32, n_modes, 3, max_transitions, n_walkers)
+        proposed_states = CUDA.zeros(Float32, n_modes, 3, max_transitions, n_walkers)
         matrix_elements = CUDA.zeros(Float32, max_transitions, n_walkers)
         
         new(proposed_states, matrix_elements)
@@ -41,10 +41,11 @@ end
 """
 運動エネルギー（対角項）を計算する関数
 """
-function _compute_kinetic(states::CuArray{Int32, 3}, params::SystemParams)
+function _compute_kinetic(states::CuArray{Float32, 3}, params::SystemParams)
     # 波数ベクトル k = [-k_max, ..., k_max] を作成し、二乗する
+    L_box = params.L_box
     k_vec = CuArray(Float32.(-params.k_max:params.k_max))
-    k2_vec = k_vec .^ 2 # サイズ: [n_modes]
+    k2_vec = (k_vec .* 2 .* π ./ L_box) .^ 2 # サイズ: [n_modes]
     
     # statesの形状 [n_modes, 3, n_walkers] に対して、各モードの粒子数とk^2を掛けて足し合わせる
     # sum(..., dims=(1,2)) でモードとスピン成分について和をとる
@@ -58,9 +59,9 @@ end
 局所エネルギー全体を評価するメイン関数
 """
 function compute_local_energy(
-    states::CuArray{Int32, 3}, 
+    states::CuArray{Float32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
-    proposed_states::CuArray{Int32, 4},
+    proposed_states::CuArray{Float32, 4},
     matrix_elements::CuArray{Float32, 2},
     params::SystemParams, 
     threads::Int,
@@ -68,9 +69,11 @@ function compute_local_energy(
 )
     n_walkers = size(states, 3)
     
+    ## report("Compute local Energy Start")
     # 1. 運動エネルギーの計算（一瞬で終わります）
     E_loc = _compute_kinetic(states, params) 
-    
+    ## report("Compute kinetic Energy")
+
     # 2. 相互作用エネルギーの計算（遷移テンソルの構築とNN評価）
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
     # proposed_states: [n_modes, 3, max_transitions, n_walkers]
@@ -83,6 +86,7 @@ function compute_local_energy(
         proposed_states, 
         matrix_elements, 
         params.k_max,
+        params.L_box,
         params.c0,
         params.c1
     )
@@ -94,6 +98,8 @@ function compute_local_energy(
     ##     params.c0,
     ##     params.c1
     ## )
+    ## report("Compute Scattering kernel")
+    
 
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
@@ -114,6 +120,7 @@ function compute_local_energy(
 
     # 3. 合計して返す
     E_loc += dropdims(E_V, dims=1)
+    ## report("Compute local Energy End")
     
     return E_loc
 end
@@ -125,7 +132,7 @@ function _scattering_kernel!(
     states,             # [n_modes, 3, n_walkers] 現在の状態
     proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
     matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
-    k_max::Int, c0::Float32, c1::Float32
+    k_max::Int, L_box::Float32, c0::Float32, c1::Float32
 )
     n_modes = 2 * k_max + 1
     w = (blockIdx().x - 1) * blockDim().x + threadIdx().x # 自分が担当するウォーカーID
@@ -134,8 +141,8 @@ function _scattering_kernel!(
         transition_idx = 1
         
         # 定数部分
-        v0 = c0 / Float32(2 * π)
-        v1 = c1 / Float32(2 * π)
+        v0 = c0 / L_box
+        v1 = c1 / L_box
 
         # 散乱する2粒子のモードを選択
         for m1 in 1:n_modes, s1 in 1:3
@@ -248,6 +255,7 @@ end
 Updates the proposed states based on the current states and transition parameters.
 """
 function _update_proposed_states!(proposed_states, states, n_modes, m1, s1, m2, s2, m1_new, s1_new, m2_new, s2_new, id, w)
+    id > size(proposed_states, 3) && return nothing
     # 状態をコピーして更新
     for s in 1:3
         for m in 1:n_modes
@@ -272,7 +280,7 @@ function _calculate_bose_factor(proposed_states, factor_annihilate, m1_new, s1_n
 end
 
 function compute_local_correlation(
-    states::CuArray{Int32, 3}, 
+    states::CuArray{Float32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
     k_max::Int,
     threads::Int,
@@ -285,7 +293,7 @@ function compute_local_correlation(
     total_t = 9 * n_q * max_t_per
 
     # 通しインデックス total_t で proposed_states と matrix_elements を 1対1 対応させる
-    proposed_states = CUDA.zeros(Int32, n_modes, 3, total_t, n_walkers)
+    proposed_states = CUDA.zeros(Float32, n_modes, 3, total_t, n_walkers)
     matrix_elements = CUDA.zeros(Float32, total_t, n_walkers)
  
     # (A) 遷移先状態 x' と行列要素を一括生成
@@ -403,7 +411,7 @@ end
 Im の平均 ≈ 0 が健全性チェック (S² はエルミートなので)。
 """
 function compute_local_S2(
-    states::CuArray{Int32, 3},
+    states::CuArray{Float32, 3},
     log_psi_current::CuArray{ComplexF32, 1},
     n_particles::Int,
     k_max::Int,
@@ -415,7 +423,7 @@ function compute_local_S2(
     # 非対角スロット上限: 順序付き占有セル対 ≤ min(N,3L)²、チャネル ≤ 2/対
     max_t = 2 * min(n_particles, 3 * n_modes)^2
 
-    proposed_states = CUDA.zeros(Int32, n_modes, 3, max_t, n_walkers)
+    proposed_states = CUDA.zeros(Float32, n_modes, 3, max_t, n_walkers)
     matrix_elements = CUDA.zeros(Float32, max_t, n_walkers)
     diag_part       = CUDA.zeros(Float32, n_walkers)
 
@@ -513,7 +521,7 @@ function _s2_kernel!(
 end
 
 function compute_local_density_matrix(
-    states::CuArray{Int32, 3}, 
+    states::CuArray{Float32, 3}, 
     log_psi_current::CuArray{ComplexF32, 1}, 
     params::SystemParams, 
     threads::Int,
@@ -521,7 +529,7 @@ function compute_local_density_matrix(
 )
     n_walkers = size(states, 3)
     
-    proposed_states = CUDA.zeros(Int32, 2 * params.k_max + 1, 3, params.n_modes^2, n_walkers)
+    proposed_states = CUDA.zeros(Float32, 2 * params.k_max + 1, 3, params.n_modes^2, n_walkers)
     matrix_elements = CUDA.zeros(Float32, params.n_modes^2, n_walkers, 3)
  
     # (A) 遷移先状態 x' と、その行列要素 V_xx' を一括生成する関数
@@ -614,5 +622,7 @@ function _density_matrix_local_estimator(
 
     return nothing
 end
+
+include("./blur.jl")
 
 end # module

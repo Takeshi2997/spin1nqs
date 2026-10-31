@@ -30,9 +30,9 @@ using LinearAlgebra
 using KrylovKit
 using Printf
 
-include("../src/model.jl")
-# physics.jl のカーネルを読み込む (プロジェクト構成に合わせてパスを調整)
-include("../src/physics.jl")   # ★ _scattering_kernel! が定義されているファイル
+## include("../src/model.jl")
+## physics.jl のカーネルを読み込む (プロジェクト構成に合わせてパスを調整)
+## include("../src/physics.jl")   # ★ _scattering_kernel! が定義されているファイル
 
 # ============================================================
 # パラメータ (config と合わせる)

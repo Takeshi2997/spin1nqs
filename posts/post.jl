@@ -9,14 +9,13 @@ using ComponentArrays
 using Printf
 using Dates
 using Statistics
-using StatsBase
 
 # 自作モジュールの読み込み
 include("../src/hilbert.jl")
-include("../tests/ed_from_kernel.jl")
+## include("../tests/ed_from_kernel.jl")
+include("../src/model.jl")
 include("../src/sampler.jl")
 include("../src/physics.jl")
-include("../src/model.jl")
 
 using .Hilbert
 using .Model
@@ -24,18 +23,19 @@ using .Sampler
 using .Physics
 
 function main()
-    srcday = "20260911"
-    srcdir = "./data_server/" * srcday
-    epoch = 9000
-    filename = "nqs_model_2306_epoch" * string(epoch) * ".jld2"
+    srcday = "n_scan_20261014"
+    srcdir = "./data/" * srcday
+    epoch = 30000
+    filename = "/nqs_model_21890_epoch" * string(epoch) * ".jld2"
+    filename_jastrow = "/jastrow_780_epoch" * string(epoch) * ".jld2"
 
-    dirname = "./data/" * srcday * "_estimated/"
+    dirname = "./data/" * srcday * "_estimated"
     if !isdir(dirname)
         mkpath(dirname)
     end
     
     # === 1. 物理・シミュレーションパラメータの設定 ===
-    config_path = length(ARGS) > 0 ? ARGS[1] : "config_local.toml"
+    config_path = srcdir * "/config.toml"
     println("🔧 Loading configuration from: ", config_path)
     
     # 2. TOMLファイルのパース
@@ -45,6 +45,7 @@ function main()
     sys_config = config["system"]
     k_max = sys_config["k_max"]
     n_particles = sys_config["n_particles"]
+    L_box = n_particles * 2 * π / 4
     hbar2_over_2m = Float32(sys_config["hbar2_over_2m"])
     c0 = Float32(sys_config["c0"])
     c1 = Float32(sys_config["c1"])
@@ -57,7 +58,8 @@ function main()
     n_steps = estimate_config["n_steps"]
     n_thermal = estimate_config["n_thermal"]
     n_interval = estimate_config["n_interval"]
-    beta = estimate_config["beta"]
+    beta = Float32(estimate_config["beta"])
+    q = Float32(estimate_config["q"])
     n_total = n_walkers * n_steps
 
     # モデル設定の読み込み
@@ -68,6 +70,7 @@ function main()
     params = SystemParams(
         k_max,
         2 * k_max + 1,
+        L_box,
         hbar2_over_2m,
         c0,  # c0 (密度相互作用)
         c1   # c1 (スピン交換相互作用)
@@ -87,15 +90,26 @@ function main()
     # B. 複素数出力NQSモデルの構築 (出力2ch)
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     cp(srcdir * filename, dirname * filename, force=true)
+    cp(srcdir * "/config.toml", dirname * "/config.toml", force=true)
+    cp(srcdir * "/data.txt", dirname * "/data.txt", force=true)
     ps_cpu, st_cpu = load_nqs_model(dirname * filename)
 
-    filename  = dirname * "/data_log_epoch" * string(epoch) * ".txt"
+    filename  = dirname * "/log_epoch" * string(epoch) * ".txt"
     io = open(filename, "w")
    
-
     # 重み(ps)と状態(st)をGPUへ転送
-    ps = ComponentArray(ps_cpu) |> cu
+    nqs_params = ComponentArray(ps_cpu) |> cu
     st = st_cpu |> cu
+
+    ## Jastrow用のインデックス
+    cp(srcdir * filename_jastrow, dirname * filename_jastrow, force=true)
+    ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
+    J = CUDA.zeros(Float32, npair(ji))
+    J = load_jastrow(dirname * filename_jastrow) |> cu
+    U = build_U(J, ji)
+
+    ## 結合パラメータ
+    ps = NqsParametersWithJastrow(nqs_params, U, n_particles)
 
     # C. サンプラーバッファの確保
     sampler = MCMCSampler(basis)
@@ -113,7 +127,9 @@ function main()
     # 現在の状態でのネットワーク出力を取得 [2, n_walkers]
     println("サンプリングを実施中...")
     acc_rate = 0f0
-    all_states = CUDA.zeros(Int32, (2 * k_max + 1), 3, n_walkers * n_steps)
+    max_transitions = min(n_particles, 3 * (2 * k_max + 1))^2 * 3 * (4 * k_max + 1)
+    blurred_proposed_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, max_transitions, chunk)
+    all_states = CUDA.zeros(Float32, (2 * k_max + 1), 3, n_walkers * n_steps)
     all_outputs = CUDA.zeros(ComplexF32, n_walkers * n_steps)
     for step in 1:n_steps
         for _ in 1:n_interval
@@ -129,17 +145,25 @@ function main()
     println("サンプリングが完了しました。")
    
     println("=== 推定を開始します ===")
-    logw_lst = CUDA.zeros(Float32, n_total)
+    
+    w_lst = CUDA.zeros(Float32, n_total)
     for c in Iterators.partition(1:n_total, chunk)
+        blurred_states, w = blur(
+            all_states[:, :, c], 
+            blurred_proposed_states, 
+            params, 
+            q, 
+            basis.threads, 
+            nqs_model, ps, st
+        )
+        all_states[:, :, c] .= blurred_states
         inputs_c = all_states[:, :, c]
         outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
         all_outputs[c] .= outputs_c
-        logw = beta .* real.(outputs_c)
-        logw_lst[c] = logw
+        w_lst[c] .= w
     end
-    logw_lst .-= maximum(logw_lst)
-    w_lst = exp.(logw_lst)
     w_sum = sum(w_lst)
+    w2 = w_sum^2 / sum(w_lst.^2) / n_total
 
     E_sum  = 0
     E2_sum = 0
@@ -187,14 +211,14 @@ function main()
     # 相関関数の評価
     inputs = Float32.(all_states)
     outputs = eval_complex_network(nqs_model, inputs, ps, st)
-    eval_space_correlation(all_states, outputs, w_lst, k_max, basis.threads, n_total, chunk, nqs_model, ps, st, dirname)
+    eval_space_correlation(all_states, outputs, w_lst, k_max, L_box, basis.threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
 
     println("=== 計算が終了しました ===")
     close(io)
 end
 
-function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chunk, nqs_model, ps, st, dirname)
-    filename  = dirname * "space_correlation.txt"
+function eval_space_correlation(states, outputs, w, k_max, L_box, threads, n_total, chunk, nqs_model, ps, st, dirname, epoch)
+    filename  = dirname * "/space_correlation" * "_epoch" * string(epoch) * ".txt"
     if isfile(filename)
         rm(filename)
     end
@@ -220,7 +244,7 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chu
     n22_diag = Float32(Ns_diag[2])
     n33_diag = Float32(Ns_diag[3])
     ## 1, 2; 2, 3; 3, 1 の相関用
-    Nss_off = Array(dropdims(sum(Ns_w .* circshift(Ns_w, 1) .* reshape(w, 1, :), dims=2), dims=2) ./ w_sum)
+    Nss_off = dropdims(Array(sum(Ns_w .* circshift(Ns_w, 2) .* reshape(w, 1, :), dims=2) ./ w_sum), dims=2)
     n12_diag = Float32(Nss_off[1])
     n23_diag = Float32(Nss_off[2])
     n31_diag = Float32(Nss_off[3])
@@ -261,13 +285,14 @@ function eval_space_correlation(states, outputs, w, k_max, threads, n_total, chu
     rho2_q_12[k_max + 1] = n12_diag
     rho2_q_23[k_max + 1] = n23_diag
     rho2_q_31[k_max + 1] = n31_diag
+    println(n31_diag)
  
     rho2_q_d = dropdims(sum(rho2_q_mean, dims=(2, 3)), dims=(2, 3))
     rho2_q_d[k_max + 1] = nd_diag
     println(nd_diag)
 
     # フーリエ変換
-    L_box = Float32(2 * π)
+    ## L_box = Float32(2 * π)
     x_grid = Float32.(range(-L_box/2, L_box/2, length=1000))
     k_list = Float32.((2 * π / L_box) .* (-k_max:k_max))
     W = exp.(-1.0f0im .* x_grid .* k_list')
