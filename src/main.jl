@@ -141,7 +141,7 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/n_scan_20261015/nqs_model_18818_epoch30000.jld2")
+    ## ps_cpu, st_cpu = load_nqs_model("./data/n_scan_20261030/nqs_model_20354_epoch29000.jld2")
     ## ps_old, st_old = load_nqs_model("./data/n_scan_20261015/nqs_model_18818_epoch30000.jld2")
     ## ps_cpu, st_cpu = expand_params(ps_old, k_max - 1, k_max, nqs_model, rng)
     ## e_start = 3001
@@ -154,7 +154,7 @@ function main()
     ## Jastrow用のインデックス
     ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
     J = CUDA.zeros(Float32, npair(ji))
-    ## J = load_jastrow("./data/n_scan_20261015/jastrow_120_epoch30000.jld2") |> cu
+    ## J = load_jastrow("./data/n_scan_20261030/jastrow_378_epoch29000.jld2") |> cu
     ## J_old = load_jastrow("./data/n_scan_20261015/jastrow_120_epoch30000.jld2")
     ## J = expand_jastrow(J_old, k_max - 1, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
     U = build_U(J, ji)
@@ -181,7 +181,7 @@ function main()
     ## report("Initialize")
     # === 4. メイン学習ループ ===
     n_clipping = 0
-    for epoch in e_start:n_epochs
+    for epoch in e_start:30 ## n_epochs
         ## println("########## Epoch Start! ##########")
         ## prof = CUDA.@profile begin
         # A. サンプリングとデータ収集
@@ -196,27 +196,24 @@ function main()
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        w_lst = CUDA.zeros(Float32, n_total)
-        ## logw_lst = CUDA.zeros(Float32, n_total)
+        logw_lst = CUDA.zeros(Float32, n_total)
         for c in Iterators.partition(1:n_total, chunk)
-            blurred_states, w = blur(
-                all_states[:, :, c], 
-                blurred_proposed_states, 
-                params, 
-                q, 
-                basis.threads, 
-                nqs_model, ps, st
-            )
-            all_states[:, :, c] .= blurred_states
+            ## all_states[:, :, c], logw = blur(
+            ##     all_states[:, :, c], 
+            ##     blurred_proposed_states, 
+            ##     params, 
+            ##     q, 
+            ##     basis.threads, 
+            ##     nqs_model, ps, st
+            ## ) ## blur
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             all_outputs[c] .= outputs_c
-            w_lst[c] .= w
-            ## logw = beta .* real.(outputs_c)
-            ## logw_lst[c] = logw
+            logw = beta .* real.(outputs_c) # Reweighting
+            logw_lst[c] = logw
         end
-        ## logw_lst .-= maximum(logw_lst)
-        ## w_lst = exp.(logw_lst)
+        logw_lst .-= maximum(logw_lst)
+        w_lst = exp.(logw_lst)
         w_sum = sum(w_lst)
         w2 = w_sum^2 / sum(w_lst.^2) / n_total
 

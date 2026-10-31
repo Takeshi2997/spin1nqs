@@ -58,9 +58,12 @@ function main()
     n_steps = estimate_config["n_steps"]
     n_thermal = estimate_config["n_thermal"]
     n_interval = estimate_config["n_interval"]
-    beta = Float32(estimate_config["beta"])
-    q = Float32(estimate_config["q"])
     n_total = n_walkers * n_steps
+
+    # 学習時設定の読み込み
+    train_config = config["training"]
+    beta = Float32(train_config["beta"])
+    q = Float32(train_config["q"])
 
     # モデル設定の読み込み
     model_config = config["model"]

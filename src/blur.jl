@@ -107,7 +107,7 @@ function blur(states::CuArray{Float32,3}, proposed_states::CuArray{Float32,4},
     trm = ifelse.(valid, exp.(d) ./ max.(Tnb, Int32(1)), 0f0)
     w   = 1f0 ./ ((1 - q) .+ q .* vec(sum(trm; dims = 1)))           # Inf → ω=0 で正しい極限
 
-    return blurred, w
+    return blurred, log.(w)
 end
 
 """

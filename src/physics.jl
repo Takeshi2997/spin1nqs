@@ -81,10 +81,12 @@ function compute_local_energy(
     proposed_states .= reshape(states, params.n_modes, 3, 1, :)   # 全スロットに現状態を複製
     matrix_elements .= 0f0                                         # 全スロットを無効値で初期化
     blocks = ceil(Int, n_walkers / threads)
+    counts = CUDA.zeros(Int32, n_walkers)
     @cuda threads=threads blocks=blocks _scattering_kernel!(
         states, 
         proposed_states, 
         matrix_elements, 
+        counts, 
         params.k_max,
         params.L_box,
         params.c0,
@@ -100,16 +102,19 @@ function compute_local_energy(
     ## )
     ## report("Compute Scattering kernel")
     
+    c = maximum(counts)
+    @views matrix_elements = matrix_elements[1:c, :]
 
     # (B) 提案状態をネットワークに通すため、バッチ次元を平坦化
     # [n_modes, 3, max_transitions * n_walkers] に変形
     flat_proposed = reshape(proposed_states, params.n_modes, 3, :)
-
+    flat_proposed = flat_proposed[:, :, 1:c * n_walkers]
+    
     # (C) ネットワークで一括評価
     flat_log_psi_prop = eval_complex_network(model, flat_proposed, ps, st)
     
     # (D) 元の形 [max_transitions, n_walkers] に戻す
-    log_psi_prop = reshape(flat_log_psi_prop, size(matrix_elements, 1), n_walkers)
+    log_psi_prop = reshape(flat_log_psi_prop, c, n_walkers)
     
     # (E) 波動関数の比 Ψ(x')/Ψ(x) = exp(log_psi_prop - log_psi_current) を計算し、行列要素と掛ける
     # Ensure log_psi_current is a 1 x n_walkers row for broadcasting
@@ -121,7 +126,7 @@ function compute_local_energy(
     # 3. 合計して返す
     E_loc += dropdims(E_V, dims=1)
     ## report("Compute local Energy End")
-    
+ 
     return E_loc
 end
 
@@ -132,6 +137,7 @@ function _scattering_kernel!(
     states,             # [n_modes, 3, n_walkers] 現在の状態
     proposed_states,    # [n_modes, 3, MAX_TRANSITIONS, n_walkers] 遷移先を書き込むバッファ
     matrix_elements,    # [MAX_TRANSITIONS, n_walkers] 行列要素 V_xx' を書き込むバッファ
+    counts, 
     k_max::Int, L_box::Float32, c0::Float32, c1::Float32
 )
     n_modes = 2 * k_max + 1
@@ -237,6 +243,7 @@ function _scattering_kernel!(
                 end
             end
         end
+        counts[w] = transition_idx
 
         ## # 使わなかった残りのスロットは行列要素を 0 にして無効化する
         ## while transition_idx <= size(matrix_elements, 1)
