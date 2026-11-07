@@ -141,7 +141,9 @@ function main()
     nqs_model = build_momentum_nqs(k_max, hidden_dim=hidden_dim)
     ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     e_start = 1
-    ## ps_cpu, st_cpu = load_nqs_model("./data/20261006/nqs_model_2906_epoch3000.jld2")
+    ## ps_cpu, st_cpu = load_nqs_model("./data/n_scan_20261030/nqs_model_20354_epoch29000.jld2")
+    ## ps_old, st_old = load_nqs_model("./data/n_scan_20261015/nqs_model_18818_epoch30000.jld2")
+    ## ps_cpu, st_cpu = expand_params(ps_old, k_max - 1, k_max, nqs_model, rng)
     ## e_start = 3001
     nqs_length = Lux.parameterlength(ps_cpu)
 
@@ -152,7 +154,9 @@ function main()
     ## Jastrow用のインデックス
     ji = to_gpu(JastrowIndex(3 * (2 * k_max + 1)))
     J = CUDA.zeros(Float32, npair(ji))
-    ## J = load_jastrow("./data/20261006/jastrow_780_epoch3000.jld2") |> cu
+    ## J = load_jastrow("./data/n_scan_20261030/jastrow_378_epoch29000.jld2") |> cu
+    ## J_old = load_jastrow("./data/n_scan_20261015/jastrow_120_epoch30000.jld2")
+    ## J = expand_jastrow(J_old, k_max - 1, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
     U = build_U(J, ji)
     n_length = nqs_length + npair(ji)
 
@@ -192,27 +196,24 @@ function main()
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        w_lst = CUDA.zeros(Float32, n_total)
-        ## logw_lst = CUDA.zeros(Float32, n_total)
+        logw_lst = CUDA.zeros(Float32, n_total)
         for c in Iterators.partition(1:n_total, chunk)
-            blurred_states, w = blur(
-                all_states[:, :, c], 
-                blurred_proposed_states, 
-                params, 
-                q, 
-                basis.threads, 
-                nqs_model, ps, st
-            )
-            all_states[:, :, c] .= blurred_states
+            ## all_states[:, :, c], logw = blur(
+            ##     all_states[:, :, c], 
+            ##     blurred_proposed_states, 
+            ##     params, 
+            ##     q, 
+            ##     basis.threads, 
+            ##     nqs_model, ps, st
+            ## ) ## blur
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             all_outputs[c] .= outputs_c
-            w_lst[c] .= w
-            ## logw = beta .* real.(outputs_c)
-            ## logw_lst[c] = logw
+            logw = beta .* real.(outputs_c) ## Reweighting
+            logw_lst[c] = logw
         end
-        ## logw_lst .-= maximum(logw_lst)
-        ## w_lst = exp.(logw_lst)
+        logw_lst .-= maximum(logw_lst)
+        w_lst = exp.(logw_lst)
         w_sum = sum(w_lst)
         w2 = w_sum^2 / sum(w_lst.^2) / n_total
 
@@ -268,8 +269,8 @@ function main()
 
         # C. 進捗の表示
        if epoch % log_iter == 0 || epoch == e_start
-            @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f, n_clipping = %4d,\n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
-            epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off, n_clipping)
+            @printf("[%s] Epoch %4d | <E> = %10.5f, Var = %6.5f, <S2> = %10.5f, <n1> = %6.3f, <n2> = %6.3f, <n3> = %6.3f, n_off = %6.3f \n", Dates.format(now(), "yyyy-mm-dd HH:MM:SS"), 
+            epoch, E_real, E_var, S2_real, n1_mean, n2_mean, n3_mean, n_off)
             open(filename, "a") do io
                 @printf(io, "%4d, %.3f, %10.8f, %10.8f, %10.8f, %10.8f, %10.8f, %6.5f, %6.5f, %6.5f, %6.8f, %6.8f, %4d,\n", 
                 epoch, time(), E_real, E_imag, E_var, S2_real, S2_imag, n1_mean, n2_mean, n3_mean, n_off, w2, n_clipping)

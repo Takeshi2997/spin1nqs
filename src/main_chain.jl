@@ -206,10 +206,12 @@ function main()
     if initfilename == "fresh" || isfile(initfilename) == false
         ps_cpu, st_cpu = initialize_model(nqs_model, rng)
     else
-        ps_old, st_old = load_nqs_model(initfilename)
-        ps_cpu, st_cpu = expand_params(ps_old, k_max - 3, k_max, nqs_model)
-        J_old = load_jastrow(j_initfilename)
-        J = expand_jastrow(J_old, k_max - 3, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
+        ## ps_old, st_old = load_nqs_model(initfilename)
+        ## ps_cpu, st_cpu = expand_params(ps_old, k_max - 1, k_max, nqs_model)
+        ## J_old = load_jastrow(j_initfilename)
+        ## J = expand_jastrow(J_old, k_max - 1, k_max; s_old=(n_particles - 4) / 3, s_new=n_particles / 3) |> cu
+        ps_cpu, st_cpu = load_nqs_model(initfilename)
+        J = load_jastrow(j_initfilename) |> cu
         rm(initfilename)
         rm(j_initfilename)
     end
@@ -259,27 +261,24 @@ function main()
         ## report("Sampling")
 
         # B. エネルギー期待値・粒子数期待値の算出
-        w_lst = CUDA.zeros(Float32, n_total)
-        ## logw_lst = CUDA.zeros(Float32, n_total)
+        logw_lst = CUDA.zeros(Float32, n_total)
         for c in Iterators.partition(1:n_total, chunk)
-            blurred_states, w = blur(
-                all_states[:, :, c], 
-                blurred_proposed_states, 
-                params, 
-                q, 
-                basis.threads, 
-                nqs_model, ps, st
-            )
-            all_states[:, :, c] .= blurred_states
+            ## all_states[:, :, c], logw = blur(
+            ##     all_states[:, :, c], 
+            ##     blurred_proposed_states, 
+            ##     params, 
+            ##     q, 
+            ##     basis.threads, 
+            ##     nqs_model, ps, st
+            ## ) ## blur
             inputs_c = all_states[:, :, c]
             outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
             all_outputs[c] .= outputs_c
-            w_lst[c] .= w
-            ## logw = beta .* real.(outputs_c)
-            ## logw_lst[c] = logw
+            logw = beta .* real.(outputs_c) # Reweighting
+            logw_lst[c] = logw
         end
-        ## logw_lst .-= maximum(logw_lst)
-        ## w_lst = exp.(logw_lst)
+        logw_lst .-= maximum(logw_lst)
+        w_lst = exp.(logw_lst)
         w_sum = sum(w_lst)
         w2 = w_sum^2 / sum(w_lst.^2) / n_total
 

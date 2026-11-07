@@ -118,15 +118,17 @@ function build_H_from_kernel(basis::Vector{Vector{Int8}}; batch::Int = 4096)
         end
         states   = CuArray(states_h)
         proposed = CUDA.zeros(Int32, N_MODES, 3, MAX_T, nb)
+        proposed .= reshape(states, N_MODES, 3, 1, :)
         melems   = CUDA.zeros(Float32, MAX_T, nb)
+        counts = CUDA.zeros(Int32, nb)
 
         # ★★★ physics.jl の実際のシグネチャに合わせて調整する ★★★
         # 例: 結合定数を直接渡す形の場合
         threads = 256
         blocks = cld(nb, threads)
         @cuda threads=threads blocks=blocks Physics._scattering_kernel!(
-            states, proposed, melems,
-            Int64(K_MAX), Float32(G0), Float32(G1),
+            states, proposed, melems, counts,
+            Int64(K_MAX), Float32(2 * π), Float32(G0), Float32(G1)
         )
         # params 構造体を渡す形なら、それを構築して渡すこと。
         # 引数の順序・型はカーネル定義と厳密に一致させる。

@@ -2,7 +2,7 @@ export JULIA_CUDA_MEMORY_POOL:=none
 
 JULIA ?= julia --project
 K := 5
-C1 := 1.0
+C1 := 0.2
 
 main:
 	CUDA_VISIBLE_DEVICES=0 julia ./src/main.jl ./params/config_server.toml
@@ -12,26 +12,14 @@ clean:
 	rm -rf core
 	
 data/ckpt_N8.jld2:
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 6 --n 8 --c1 $(C1) --n_epochs 30000 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 8 --c1 $(C1) --n_epochs 50000 \
 	    --init fresh --out $@
 
 data/ckpt_N12.jld2: data/ckpt_N8.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 9 --n 12 --c1 $(C1) --n_epochs 10000 \
-	    --init $< --out $@
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 12 --c1 $(C1) --n_epochs 20000 \
+	    --init data/ckpt_N8.jld2
 
-data/ckpt_N16.jld2: data/ckpt_N12.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 12 --n 16 --c1 $(C1) --n_epochs 10000 \
-	    --init $< --out $@
-
-data/ckpt_N20.jld2: data/ckpt_N16.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 15 --n 20 --c1 $(C1) --n_epochs 10000 \
-	    --init $< --out $@
-
-data/ckpt_N24.jld2: data/ckpt_N20.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 18 --n 24 --c1 $(C1) --n_epochs 10000 \
-	    --init $<
-
-chain: data/ckpt_N24.jld2
+chain: data/ckpt_N12.jld2
 
 post:
 	julia ./posts/post.jl

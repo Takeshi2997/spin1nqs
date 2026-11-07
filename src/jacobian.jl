@@ -107,6 +107,7 @@ using Combinatorics
 #   戻り値: Ō [n_params, nb] ComplexF32,  logψ [nb] ComplexF32
 # ============================================================
 function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
+    inputs = log.(1 .+ inputs)
     W1 = ps.layer_2.weight;  b1 = ps.layer_2.bias
     W2 = ps.layer_3.weight;  b2 = ps.layer_3.bias
     W3 = ps.layer_4.weight;  b3 = ps.layer_4.bias
@@ -116,21 +117,21 @@ function compute_O_bar(inputs::AbstractMatrix{Float32}, ps)
     nb  = size(inputs, 2)
  
     # ---- 前向き ----
-    ## U  = act.(W1 * inputs .+ b1)
-    ## H1 = inputs .+ U
+    ## U  = act.(W1 * inputs .+ b1) ## SkipConnection
+    ## H1 = inputs .+ U ## SkipConnection
     H1  = act.(W1 * inputs .+ b1) 
-    H2  = act.(W2 * H1 .+ b2)
-    ## U  = act.(W2 * H1 .+ b2)
-    ## H2 = U .+ H1
+    ## H2  = act.(W2 * H1 .+ b2)
+    U  = act.(W2 * H1 .+ b2) ## SkipConnection
+    H2 = U .+ H1 ## SkipConnection
     out = W3 * H2 .+ b3
     logψ = ComplexF32.(out[1, :], out[2, :])
     
     # ---- 逆向き ----
     ḡ2 = ComplexF32.(W3[1, :], W3[2, :])
-    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
-    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
-    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
-    ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 ## SkipConnection
+    ## D̄a = ḡ2 .* ComplexF32.(dact_from_h.(H2))
+    D̄a = ḡ2 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
+    ## Ḡ1 = transpose(ComplexF32.(W2)) * D̄a
+    Ḡ1 = transpose(ComplexF32.(W2)) * D̄a .+ ḡ2 ## SkipConnection
     D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(H1))
     ## D̄1 = Ḡ1 .* ComplexF32.(dact_from_h.(U)) ## SkipConnection
  
