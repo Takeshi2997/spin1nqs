@@ -12,26 +12,14 @@ clean:
 	rm -rf core
 	
 data/ckpt_N8.jld2:
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 2 --n 8 --c1 $(C1) --n_epochs 50000 \
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 8 --c1 $(C1) --n_epochs 50000 \
 	    --init fresh --out $@
 
 data/ckpt_N12.jld2: data/ckpt_N8.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 12 --c1 $(C1) --n_epochs 50000 \
-	    --init data/ckpt_N8.jld2 --out $@
+	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 3 --n 12 --c1 $(C1) --n_epochs 20000 \
+	    --init data/ckpt_N8.jld2
 
-data/ckpt_N16.jld2: data/ckpt_N12.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 4 --n 16 --c1 $(C1) --n_epochs 50000 \
-	    --init data/ckpt_N12.jld2  --out $@
-
-data/ckpt_N20.jld2: data/ckpt_N16.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 5 --n 20 --c1 $(C1) --n_epochs 50000 \
-	    --init data/ckpt_N16.jld2  --out $@
-
-data/ckpt_N24.jld2: data/ckpt_N20.jld2
-	$(JULIA) ./src/main_chain.jl --params ./params/config_server.toml --k_max 6 --n 24 --c1 $(C1) --n_epochs 50000 \
-	    --init data/ckpt_N20.jld2 
-
-chain: data/ckpt_N24.jld2
+chain: data/ckpt_N12.jld2
 
 post:
 	julia ./posts/post.jl

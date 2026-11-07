@@ -16,11 +16,11 @@ function main()
     @printf("=== スピン1ボソン 厳密対角化 ===\n")
     k_max = 5
     n_modes = 2 * k_max + 1
-    n_particles = 6
+    n_particles = 3
     L_box = n_particles * 2 * π / 4
     hbar2_over_2m = 1.0
     c0 = 0.0
-    c1 = 1.0
+    c1 = 0.2
     target_Mz = 0
     target_P = 0
     constrain_P = true

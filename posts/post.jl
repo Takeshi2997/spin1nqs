@@ -166,18 +166,18 @@ function main()
     
     logw_lst = CUDA.zeros(Float32, n_total)
     for c in Iterators.partition(1:n_total, chunk)
-        ## all_states[:, :, c], logw = blur(
-        ##     all_states[:, :, c], 
-        ##     blurred_proposed_states, 
-        ##     params, 
-        ##     q, 
-        ##     basis.threads, 
-        ##     nqs_model, ps, st
-        ## ) ## Blur
+        all_states[:, :, c], logw = blur(
+            all_states[:, :, c], 
+            blurred_proposed_states, 
+            params, 
+            q, 
+            basis.threads, 
+            nqs_model, ps, st
+        ) ## Blur
         inputs_c = all_states[:, :, c]
         outputs_c = eval_complex_network(nqs_model, inputs_c, ps, st)
         all_outputs[c] .= outputs_c
-        logw = beta .* real.(outputs_c) ## Reweighting
+        ## logw = beta .* real.(outputs_c) ## Reweighting
         logw_lst[c] = logw
     end
     logw_lst .-= maximum(logw_lst)
